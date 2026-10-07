@@ -9,6 +9,7 @@ initial version supports one named GitLab connection and exact project paths.
 It processes repositories sequentially and keeps each scan attempt on disk.
 
 GitHub configuration is described in [docs/github.md](docs/github.md).
+GitLab discovery options are described in [docs/gitlab.md](docs/gitlab.md).
 
 ## Build and run
 

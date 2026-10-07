@@ -34,22 +34,97 @@ type gitlabProject struct {
 }
 
 func gitlabGet(ctx context.Context, c Connection, path string, value any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.ServerURL+"/api/v4/"+path, nil)
+	_, err := gitlabGetURL(ctx, c, c.ServerURL+"/api/v4/"+path, value)
+	return err
+}
+
+func gitlabGetURL(ctx context.Context, c Connection, rawURL string, value any) (http.Header, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return errors.New("invalid GitLab request")
+		return nil, errors.New("invalid GitLab request")
 	}
 	req.Header.Set("PRIVATE-TOKEN", c.token)
 	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {
-		return errors.New("GitLab API request failed")
+		return nil, errors.New("GitLab API request failed")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GitLab API returned HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("GitLab API returned HTTP %d", resp.StatusCode)
 	}
 	if err := json.NewDecoder(resp.Body).Decode(value); err != nil {
-		return errors.New("invalid GitLab API response")
+		return nil, errors.New("invalid GitLab API response")
+	}
+	return resp.Header, nil
+}
+
+func gitlabNextPage(current string, header http.Header, c Connection) (string, error) {
+	var next string
+	for _, line := range header.Values("Link") {
+		for _, part := range strings.Split(line, ",") {
+			close := strings.Index(part, ">")
+			open := strings.Index(part, "<")
+			if open < 0 || close < open {
+				continue
+			}
+			for _, parameter := range strings.Split(part[close+1:], ";") {
+				key, value, ok := strings.Cut(strings.TrimSpace(parameter), "=")
+				if ok && key == "rel" && strings.Trim(value, "\" ") == "next" {
+					next = part[open+1 : close]
+				}
+			}
+		}
+	}
+	currentURL, _ := url.Parse(current)
+	if next == "" && header.Get("X-Next-Page") != "" {
+		page, err := strconv.Atoi(header.Get("X-Next-Page"))
+		if err != nil || page <= 0 {
+			return "", errors.New("invalid GitLab pagination page")
+		}
+		query := currentURL.Query()
+		query.Set("page", strconv.Itoa(page))
+		currentURL.RawQuery = query.Encode()
+		next = currentURL.String()
+	}
+	if next == "" {
+		return "", nil
+	}
+	nextURL, err := url.Parse(next)
+	if err != nil {
+		return "", errors.New("invalid GitLab pagination URL")
+	}
+	nextURL = currentURL.ResolveReference(nextURL)
+	server, _ := url.Parse(c.ServerURL)
+	if nextURL.Scheme != server.Scheme || nextURL.Host != server.Host || nextURL.User != nil || nextURL.Fragment != "" || !strings.HasPrefix(nextURL.Path, strings.TrimRight(server.Path, "/")+"/api/v4/") {
+		return "", errors.New("GitLab pagination URL must remain on the configured API server without credentials")
+	}
+	return nextURL.String(), nil
+}
+
+func gitlabList(ctx context.Context, c Connection, path string, add func(gitlabProject)) error {
+	next := c.ServerURL + "/api/v4/" + path
+	seen := map[string]bool{}
+	for next != "" {
+		if seen[next] {
+			return errors.New("GitLab pagination repeated a page")
+		}
+		seen[next] = true
+		var projects []gitlabProject
+		header, err := gitlabGetURL(ctx, c, next, &projects)
+		if err != nil {
+			return err
+		}
+		if projects == nil {
+			return errors.New("invalid GitLab project list")
+		}
+		for _, project := range projects {
+			add(project)
+		}
+		next, err = gitlabNextPage(next, header, c)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -61,33 +136,33 @@ func discoverGitLab(ctx context.Context, c Connection) ([]Repository, []Outcome)
 	for _, p := range c.Exclude.Repositories {
 		excluded[p] = true
 	}
-	seenPaths := map[string]bool{}
+	excludedGroup := func(path string) bool {
+		for _, group := range c.Exclude.Groups {
+			if path == group || strings.HasPrefix(path, group+"/") {
+				return true
+			}
+		}
+		return false
+	}
 	seenIDs := map[int64]bool{}
-	for _, path := range c.Include.Repositories {
-		if seenPaths[path] || excluded[path] {
-			continue
-		}
-		seenPaths[path] = true
-		repo := Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: path}
-		var p gitlabProject
-		err := gitlabGet(ctx, c, "projects/"+url.PathEscape(path), &p)
-		if err != nil {
-			failures = append(failures, Outcome{Repository: repo, Outcome: "failed", Error: err.Error(), CheckedAt: time.Now().UTC()})
-			continue
-		}
+	failure := func(repo Repository, err error) {
+		failures = append(failures, Outcome{Repository: repo, Outcome: "failed", Error: err.Error(), CheckedAt: time.Now().UTC()})
+	}
+	addProject := func(p gitlabProject) {
+		repo := Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: p.Path}
 		if p.ID <= 0 || p.Path == "" {
-			failures = append(failures, Outcome{Repository: repo, Outcome: "failed", Error: "invalid GitLab repository identity", CheckedAt: time.Now().UTC()})
-			continue
+			failure(repo, errors.New("invalid GitLab repository identity"))
+			return
 		}
-		if seenIDs[p.ID] || excluded[p.Path] || (p.Archived && !c.IncludeArchived) || (p.Fork != nil && !c.IncludeForks) {
-			continue
+		if seenIDs[p.ID] || excluded[p.Path] || excludedGroup(p.Path) || (p.Archived && !c.IncludeArchived) || (p.Fork != nil && !c.IncludeForks) {
+			return
 		}
 		seenIDs[p.ID] = true
 		repo.ID = strconv.FormatInt(p.ID, 10)
-		repo.Path = p.Path
 		repo.DefaultBranch = p.DefaultBranch
 		repo.Empty = p.Empty
 		repo.CloneURL = p.CloneURL
+		var err error
 		if !repo.Empty {
 			if repo.DefaultBranch == "" {
 				err = errors.New("repository has no default branch and is not confirmed empty")
@@ -106,10 +181,38 @@ func discoverGitLab(ctx context.Context, c Connection) ([]Repository, []Outcome)
 			}
 		}
 		if err != nil {
-			failures = append(failures, Outcome{Repository: repo, Outcome: "failed", Error: err.Error(), CheckedAt: time.Now().UTC()})
-			continue
+			failure(repo, err)
+			return
 		}
 		repos = append(repos, repo)
+	}
+	seenPaths := map[string]bool{}
+	for _, path := range c.Include.Repositories {
+		if seenPaths[path] || excluded[path] || excludedGroup(path) {
+			continue
+		}
+		seenPaths[path] = true
+		var p gitlabProject
+		if err := gitlabGet(ctx, c, "projects/"+url.PathEscape(path), &p); err != nil {
+			failure(Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: path}, err)
+			continue
+		}
+		addProject(p)
+	}
+	seenGroups := map[string]bool{}
+	for _, group := range c.Include.Groups {
+		if seenGroups[group] || excludedGroup(group) {
+			continue
+		}
+		seenGroups[group] = true
+		if err := gitlabList(ctx, c, "groups/"+url.PathEscape(group)+"/projects?include_subgroups=true&with_shared=false&per_page=100", addProject); err != nil {
+			failure(Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: group}, err)
+		}
+	}
+	if c.AllAccessible {
+		if err := gitlabList(ctx, c, "projects?per_page=100&order_by=id&sort=asc", addProject); err != nil {
+			failure(Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: "all_accessible"}, err)
+		}
 	}
 	return repos, failures
 }
