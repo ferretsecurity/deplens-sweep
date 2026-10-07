@@ -1,8 +1,10 @@
 package sweep_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -153,20 +155,21 @@ func TestRetryAfterSecondsAndDateDelayTheNextRequest(t *testing.T) {
 			f := newFixture(t)
 			original := f.server.Config.Handler
 			var requests atomic.Int32
-			var earliest time.Time
+			var earliest atomic.Int64
 			f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if requests.Add(1) == 1 {
 					if format == "seconds" {
-						earliest = time.Now().Add(time.Second)
+						earliest.Store(time.Now().Add(time.Second).UnixNano())
 						w.Header().Set("Retry-After", "1")
 					} else {
-						earliest = time.Now().Add(2 * time.Second).Truncate(time.Second)
-						w.Header().Set("Retry-After", earliest.UTC().Format(http.TimeFormat))
+						date := time.Now().Add(2 * time.Second).Truncate(time.Second)
+						earliest.Store(date.UnixNano())
+						w.Header().Set("Retry-After", date.UTC().Format(http.TimeFormat))
 					}
 					http.Error(w, "test-secret limited", 429)
 					return
 				}
-				if time.Now().Before(earliest.Add(-20 * time.Millisecond)) {
+				if time.Now().Before(time.Unix(0, earliest.Load()).Add(-20 * time.Millisecond)) {
 					t.Errorf("retried before server delay elapsed")
 				}
 				original.ServeHTTP(w, r)
@@ -327,6 +330,141 @@ func TestGitDoesNotInheritTraceOrInjectedConfiguration(t *testing.T) {
 	out, err := f.run()
 	if err != nil {
 		t.Fatalf("Git inherited unsafe diagnostics: %v %s", err, out)
+	}
+	f.assertNoSecretOrCheckout(out)
+}
+
+func TestPaginationRetriesOnlyTheFailedPageAndRetainsKnownRepositories(t *testing.T) {
+	for _, exhausted := range []bool{false, true} {
+		t.Run(fmt.Sprint(exhausted), func(t *testing.T) {
+			f := newFixture(t)
+			original := f.server.Config.Handler
+			second := map[string]any{"id": 43, "path_with_namespace": "team/second", "default_branch": "main", "http_url_to_repo": strings.Replace(f.server.URL, "http:", "https:", 1) + "/team/second.git"}
+			var firstPage, secondPage atomic.Int32
+			f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v4/groups/team/projects" {
+					original.ServeHTTP(w, r)
+					return
+				}
+				if r.URL.Query().Get("page") != "2" {
+					firstPage.Add(1)
+					w.Header().Set("Link", "<"+f.server.URL+"/api/v4/groups/team/projects?page=2>; rel=\"next\"")
+					json.NewEncoder(w).Encode([]any{f.projects["team/project"]})
+					return
+				}
+				if secondPage.Add(1) == 1 || exhausted {
+					http.Error(w, "test-secret temporary page failure", 503)
+					return
+				}
+				json.NewEncoder(w).Encode([]any{second})
+			})
+			data, _ := os.ReadFile(f.config)
+			data = []byte(strings.Replace(string(data), "repositories:\n        - team/project", "groups: [team]", 1))
+			os.WriteFile(f.config, data, 0600)
+			out, err := f.run()
+			if (err != nil) != exhausted {
+				t.Fatalf("exhausted=%v error=%v %s", exhausted, err, out)
+			}
+			want := int32(2)
+			wantComplete := float64(2)
+			if exhausted {
+				want = 3
+				wantComplete = 1
+			}
+			if firstPage.Load() != 1 || secondPage.Load() != want {
+				t.Fatalf("page replay: first=%d second=%d", firstPage.Load(), secondPage.Load())
+			}
+			summary := f.summary()
+			counts := summary["counts"].(map[string]any)
+			if counts["complete"] != wantComplete || summary["discovery_complete"] == exhausted {
+				t.Fatalf("known repositories lost or duplicated: %#v", summary)
+			}
+			f.assertNoSecretOrCheckout(out)
+		})
+	}
+}
+
+func TestRetriedAPIRedirectCannotForwardCredentials(t *testing.T) {
+	for _, provider := range []string{"gitlab", "github"} {
+		t.Run(provider, func(t *testing.T) {
+			var f *fixture
+			if provider == "github" {
+				f = newGitHubFixture(t)
+			} else {
+				f = newFixture(t)
+			}
+			var destinationRequests, sourceRequests atomic.Int32
+			destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { destinationRequests.Add(1) }))
+			defer destination.Close()
+			f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if sourceRequests.Add(1) == 1 {
+					http.Error(w, "test-secret temporary failure", 503)
+					return
+				}
+				http.Redirect(w, r, destination.URL+"/test-secret", http.StatusFound)
+			})
+			out, err := f.run()
+			if err == nil {
+				t.Fatalf("redirect accepted: %s", out)
+			}
+			if sourceRequests.Load() != 2 || destinationRequests.Load() != 0 {
+				t.Fatalf("redirect followed during retry: source=%d destination=%d", sourceRequests.Load(), destinationRequests.Load())
+			}
+			f.assertNoSecretOrCheckout(out)
+		})
+	}
+}
+
+func TestExhaustedCloneRetriesDoNotStopOtherRepositories(t *testing.T) {
+	f := newFixture(t)
+	f.workerProjects(2)
+	gitPath := filepath.Join(f.dir, "bin", "git")
+	script, _ := os.ReadFile(gitPath)
+	script = []byte(strings.Replace(string(script), "if [ \"$1\" = clone ]; then", `if [ "$1" = clone ]; then
+  case "$*" in *project0.git*) echo 'fatal: The requested URL returned error: 503 test-secret' >&2; exit 3 ;; esac`, 1))
+	os.WriteFile(gitPath, script, 0700)
+	out, err := f.run()
+	if err == nil {
+		t.Fatalf("exhausted failure accepted: %s", out)
+	}
+	counts := f.summary()["counts"].(map[string]any)
+	if counts["failed"] != float64(1) || counts["complete"] != float64(1) {
+		t.Fatalf("other repository stopped: %#v", counts)
+	}
+	log, _ := os.ReadFile(filepath.Join(f.dir, "git.log"))
+	if strings.Count(string(log), "clone\n") != 4 {
+		t.Fatalf("clone attempts: %s", log)
+	}
+	f.assertNoSecretOrCheckout(out)
+}
+
+func TestRetryDelaysIncreaseBetweenAttempts(t *testing.T) {
+	f := newFixture(t)
+	var calls atomic.Int32
+	var first, second atomic.Int64
+	f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		now := time.Now()
+		switch calls.Add(1) {
+		case 1:
+			first.Store(now.UnixNano())
+		case 2:
+			if now.Sub(time.Unix(0, first.Load())) < 240*time.Millisecond {
+				t.Error("first retry skipped delay")
+			}
+			second.Store(now.UnixNano())
+		case 3:
+			if now.Sub(time.Unix(0, second.Load())) < 490*time.Millisecond {
+				t.Error("second retry did not increase delay")
+			}
+		}
+		http.Error(w, "test-secret unavailable", 503)
+	})
+	out, err := f.run()
+	if err == nil {
+		t.Fatalf("exhausted error accepted: %s", out)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("requests=%d", calls.Load())
 	}
 	f.assertNoSecretOrCheckout(out)
 }
