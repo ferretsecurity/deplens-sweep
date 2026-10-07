@@ -1,5 +1,7 @@
 # deplens-sweep
 
+See [Inventory history and reuse](docs/reuse.md) for result references and reuse inputs.
+
 Run one batch of dependency inventory scans with an installed `deplens` CLI. This
 initial version supports one named GitLab connection and exact project paths.
 It processes repositories sequentially and keeps each scan attempt on disk.
