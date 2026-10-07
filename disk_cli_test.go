@@ -211,6 +211,7 @@ printf '%s\n' '{"schema_version":1,"root":"fixture","sources":[],"check_runs":[]
 	}
 	reserve := free - 8*1024*1024
 	f.diskReserve(reserve)
+	f.syncServer()
 	cmd := exec.Command(binary, "--config", f.config)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

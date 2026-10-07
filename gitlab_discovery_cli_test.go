@@ -14,7 +14,7 @@ import (
 func gitlabDiscoveryServer(f *fixture, list http.HandlerFunc) {
 	f.t.Helper()
 	f.server.Close()
-	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.server = f.startServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("PRIVATE-TOKEN") != "test-secret" {
 			f.t.Error("missing API authentication")
 			http.Error(w, "test-secret denied", 401)
@@ -279,12 +279,12 @@ func TestGitLabPaginationRejectsUntrustedURLsAndLoops(t *testing.T) {
 	for _, mode := range []string{"other-server", "credentials", "fragment", "outside-api", "loop", "invalid-page", "invalid-array"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newFixture(t)
-			destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			destination := httptest.NewServer(f.wrapHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				t.Error("contacted untrusted pagination server")
 				if r.Header.Get("PRIVATE-TOKEN") != "" {
 					t.Error("token forwarded")
 				}
-			}))
+			})))
 			t.Cleanup(destination.Close)
 			gitlabDiscoveryServer(f, func(w http.ResponseWriter, r *http.Request) {
 				next := f.server.URL + r.URL.RequestURI()

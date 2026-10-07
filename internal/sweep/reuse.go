@@ -48,23 +48,29 @@ func inputFingerprint(cfg ScanConfig, version string) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func reusableOutcome(cfg Config, repo Repository, version string) (Outcome, bool, error) {
+func prepareRepository(cfg Config, repo Repository, version string) (string, Outcome, bool, error) {
+	if err := verifyScanner(cfg.Deplens, version); err != nil {
+		return "", Outcome{}, false, err
+	}
 	fingerprint, err := inputFingerprint(cfg.Deplens, version)
 	if err != nil {
-		return Outcome{}, false, err
+		return "", Outcome{}, false, err
 	}
-	result, ok := findReusable(cfg, repo, fingerprint)
-	return result, ok, nil
+	result, ok, err := findReusable(cfg, repo, fingerprint)
+	return fingerprint, result, ok, err
 }
 
-func findReusable(cfg Config, repo Repository, fingerprint string) (Outcome, bool) {
+func findReusable(cfg Config, repo Repository, fingerprint string) (Outcome, bool, error) {
 	dir := filepath.Join(cfg.ResultsDir, repositoryDir(repo))
 	// Every retained complete attempt is eligible, including one older than latest.
 	// This matters when inputs return to a previously scanned commit or configuration.
 	entries, err := os.ReadDir(filepath.Join(dir, "attempts"))
-	if err != nil {
-		return Outcome{}, false
+	if err != nil && !os.IsNotExist(err) {
+		return Outcome{}, false, errors.New("cannot inspect saved repository history")
 	}
+	var latest *Outcome
+	var reused Outcome
+	found := false
 	for i := len(entries) - 1; i >= 0; i-- {
 		entry := entries[i]
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
@@ -75,10 +81,14 @@ func findReusable(cfg Config, repo Repository, fingerprint string) (Outcome, boo
 		if !readSavedJSON(cfg.ResultsDir, filepath.Join(ref, "metadata.json"), &meta) {
 			continue
 		}
-		if meta.Outcome != "complete" || meta.InputFingerprint != fingerprint ||
+		if meta.Outcome != "complete" || meta.InputFingerprint == "" || meta.ScannerVersion == "" ||
 			meta.Connection != repo.Connection || meta.Provider != repo.Provider ||
-			meta.ServerURL != repo.ServerURL || meta.ID != repo.ID || meta.Revision != repo.Revision ||
+			meta.ServerURL != repo.ServerURL || meta.ID != repo.ID || !validRevision(meta.Revision) ||
 			meta.StartedAt.IsZero() || meta.ScannedAt == nil || meta.ScannedAt.Before(meta.StartedAt) || meta.CompletedAt.Before(*meta.ScannedAt) {
+			continue
+		}
+		matches := meta.InputFingerprint == fingerprint && meta.Revision == repo.Revision
+		if latest != nil && !matches {
 			continue
 		}
 		var output any
@@ -86,9 +96,60 @@ func findReusable(cfg Config, repo Repository, fingerprint string) (Outcome, boo
 			continue
 		}
 		scanned := *meta.ScannedAt
-		return Outcome{Repository: repo, Outcome: "reused", Result: filepath.ToSlash(ref), CheckedAt: time.Now().UTC(), ScannedAt: &scanned}, true
+		if latest == nil {
+			latest = &Outcome{Repository: meta.Repository, Outcome: "complete", Result: filepath.ToSlash(ref), CheckedAt: meta.StartedAt, ScannedAt: &scanned}
+		}
+		if matches {
+			reused = Outcome{Repository: repo, Outcome: "reused", Result: filepath.ToSlash(ref), CheckedAt: time.Now().UTC(), ScannedAt: &scanned}
+			found = true
+			break
+		}
 	}
-	return Outcome{}, false
+	if err := repairLatest(cfg, repo, latest); err != nil {
+		return Outcome{}, false, err
+	}
+	return reused, found, nil
+}
+
+func repairLatest(cfg Config, repo Repository, latest *Outcome) error {
+	ref := filepath.Join(repositoryDir(repo), "latest.json")
+	path := filepath.Join(cfg.ResultsDir, ref)
+	parent := cfg.ResultsDir
+	for _, part := range strings.Split(repositoryDir(repo), string(filepath.Separator)) {
+		parent = filepath.Join(parent, part)
+		info, err := os.Lstat(parent)
+		if os.IsNotExist(err) && latest == nil {
+			return nil
+		}
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("cannot repair latest complete reference through invalid history path")
+		}
+	}
+	if latest == nil {
+		// Invalid or missing artifacts cannot keep advertising a complete result.
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil || info.IsDir() {
+			return errors.New("cannot repair latest complete reference")
+		}
+		if err := os.Remove(path); err != nil {
+			return errors.New("cannot repair latest complete reference")
+		}
+		return nil
+	}
+	var current Outcome
+	if readSavedJSON(cfg.ResultsDir, ref, &current) && current.Result == latest.Result && current.Outcome == "complete" &&
+		current.Connection == latest.Connection && current.Provider == latest.Provider && current.ServerURL == latest.ServerURL && current.ID == latest.ID &&
+		current.Revision == latest.Revision && current.Path == latest.Path && current.DefaultBranch == latest.DefaultBranch &&
+		current.CheckedAt.Equal(latest.CheckedAt) && current.ScannedAt != nil && current.ScannedAt.Equal(*latest.ScannedAt) {
+		return nil
+	}
+	if err := saveJSON(path, redactValue(latest, cfg)); err != nil {
+		return errors.New("cannot repair latest complete reference")
+	}
+	return nil
 }
 
 func readSavedJSON(root, ref string, value any) bool {

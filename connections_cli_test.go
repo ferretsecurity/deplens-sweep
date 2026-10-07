@@ -25,7 +25,7 @@ func TestAccountsOnSameServerKeepSelectionsAndReuseIndependent(t *testing.T) {
 	t.Setenv("SWEEP_SECOND_TOKEN", "other-secret")
 	var mu sync.Mutex
 	apiAccounts := map[string]int{}
-	f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.setHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := r.Header.Get("PRIVATE-TOKEN")
 		account := map[string]string{"test-secret": "first", "other-secret": "second"}[token]
 		if account == "" || r.Header.Get("Authorization") != "" {
@@ -46,7 +46,7 @@ func TestAccountsOnSameServerKeepSelectionsAndReuseIndependent(t *testing.T) {
 			id = 43
 		}
 		json.NewEncoder(w).Encode(map[string]any{"id": id, "path_with_namespace": path, "default_branch": "main", "http_url_to_repo": strings.Replace(f.server.URL, "http:", "https:", 1) + "/" + path + ".git", "empty_repo": false})
-	})
+	}))
 	gitPath := filepath.Join(f.dir, "bin", "git")
 	raw, _ := os.ReadFile(gitPath)
 	raw = []byte(strings.Replace(string(raw), `[ "$("$GIT_ASKPASS" 'Password for https://server')" = test-secret ] || exit 92`, `[ "$("$GIT_ASKPASS" 'Password for https://server')" = "$SWEEP_GIT_TOKEN" ] || exit 92
@@ -144,14 +144,14 @@ func TestRuntimeConnectionFailuresDoNotDiscardOtherConnections(t *testing.T) {
 			case "authentication":
 				badEnv = "SWEEP_BROKEN_TOKEN"
 				t.Setenv(badEnv, "broken-secret")
-				original := f.server.Config.Handler
-				f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				original := f.getHandler()
+				f.setHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if r.Header.Get("PRIVATE-TOKEN") == "broken-secret" {
 						http.Error(w, "broken-secret denied", 401)
 						return
 					}
 					original.ServeHTTP(w, r)
-				})
+				}))
 			case "discovery":
 				delete(f.projects, badPath)
 			case "clone":
@@ -218,7 +218,7 @@ func connectionBlock(name, provider, server, env, paths, extra string) string {
 func TestMixedProviderConnectionsProduceIndependentInventoriesAndSharedScanInputs(t *testing.T) {
 	f := newFixture(t)
 	t.Setenv("SWEEP_SECOND_TOKEN", "other-secret")
-	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	second := httptest.NewServer(f.wrapHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer other-secret" || r.Header.Get("PRIVATE-TOKEN") != "" {
 			t.Error("GitHub received wrong connection credentials")
 			http.Error(w, "unauthorized", 401)
@@ -229,7 +229,7 @@ func TestMixedProviderConnectionsProduceIndependentInventoriesAndSharedScanInput
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]any{"id": 42, "full_name": "team/project", "default_branch": "main", "clone_url": strings.Replace("http://"+r.Host, "http:", "https:", 1) + "/team/project.git"})
-	}))
+	})))
 	t.Cleanup(second.Close)
 	scannerRaw, _ := os.ReadFile(f.scanner)
 	scannerRaw = append([]byte("#!/bin/sh\n[ -z \"$SWEEP_TEST_TOKEN\" ] && [ -z \"$SWEEP_SECOND_TOKEN\" ] || exit 99\n"), scannerRaw...)

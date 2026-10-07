@@ -100,6 +100,7 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos []
 	completed := make(chan completion, min(cfg.Workers, len(repos)))
 	next, active := 0, 0
 	var failure error
+	var pendingFingerprint string
 	record := func(result Outcome) {
 		batch.Repositories = append(batch.Repositories, result)
 		if err := saveBatch(cfg, batch); err != nil && failure == nil {
@@ -124,16 +125,19 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos []
 				record(Outcome{Repository: repo, CheckedAt: time.Now().UTC(), Outcome: "empty"})
 				continue
 			}
-			reused, ok, reuseErr := reusableOutcome(cfg, repo, version)
-			if reuseErr != nil {
-				next++
-				record(Outcome{Repository: repo, CheckedAt: time.Now().UTC(), Outcome: "failed", Error: reuseErr.Error()})
-				continue
-			}
-			if ok {
-				next++
-				record(reused)
-				continue
+			if pendingFingerprint == "" {
+				fingerprint, reused, ok, reuseErr := prepareRepository(cfg, repo, version)
+				if reuseErr != nil {
+					next++
+					record(Outcome{Repository: repo, CheckedAt: time.Now().UTC(), Outcome: "failed", Error: reuseErr.Error()})
+					continue
+				}
+				if ok {
+					next++
+					record(reused)
+					continue
+				}
+				pendingFingerprint = fingerprint
 			}
 			available, spaceErr := cloneSpaceAvailable(work, *cfg.MinFreeBytes)
 			if spaceErr == nil && !available && active > 0 {
@@ -145,13 +149,16 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos []
 					message = spaceErr.Error()
 				}
 				next++
+				pendingFingerprint = ""
 				record(Outcome{Repository: repo, CheckedAt: time.Now().UTC(), Outcome: "unprocessed", Error: message})
 				continue
 			}
 			next++
 			active++
+			fingerprint := pendingFingerprint
+			pendingFingerprint = ""
 			go func() {
-				outcome, err := processRepository(ctx, cfg, c, repo, version, work, askpass)
+				outcome, err := processRepository(ctx, cfg, c, repo, version, fingerprint, work, askpass)
 				completed <- completion{outcome, err}
 			}()
 		}
@@ -178,19 +185,9 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos []
 	}
 	return failure
 }
-func processRepository(ctx context.Context, cfg Config, c Connection, repo Repository, version, work, askpass string) (Outcome, error) {
+func processRepository(ctx context.Context, cfg Config, c Connection, repo Repository, version, fingerprint, work, askpass string) (Outcome, error) {
 	started := time.Now().UTC()
-	result := Outcome{Repository: repo, CheckedAt: started, Outcome: "empty"}
-	if repo.Empty {
-		return result, nil
-	}
-	fingerprint, fingerprintErr := inputFingerprint(cfg.Deplens, version)
-	if fingerprintErr != nil {
-		return Outcome{Repository: repo, Outcome: "failed", CheckedAt: started, Error: fingerprintErr.Error()}, nil
-	}
-	if reused, ok := findReusable(cfg, repo, fingerprint); ok {
-		return reused, nil
-	}
+	result := Outcome{Repository: repo, CheckedAt: started, Outcome: "failed"}
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 	ref := filepath.Join(repositoryDir(repo), "attempts", newID())
@@ -199,10 +196,16 @@ func processRepository(ctx context.Context, cfg Config, c Connection, repo Repos
 	err := acquire(ctx, c, repo, checkout, askpass)
 	var output any
 	if err == nil {
+		err = verifyScanner(cfg.Deplens, version)
+	}
+	if err == nil {
 		scanned := time.Now().UTC()
 		meta.ScannedAt = &scanned
 		result.ScannedAt = &scanned
 		output, err = analyze(ctx, cfg, checkout)
+		if identityErr := verifyScanner(cfg.Deplens, version); identityErr != nil {
+			err = identityErr
+		}
 		if err == nil {
 			after, fingerprintErr := inputFingerprint(cfg.Deplens, version)
 			if fingerprintErr != nil || after != fingerprint {

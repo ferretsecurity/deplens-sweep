@@ -172,7 +172,7 @@ func discoverGitLab(ctx context.Context, c Connection) ([]Repository, []Outcome)
 				}
 				err = gitlabGet(ctx, c, "projects/"+repo.ID+"/repository/commits/"+url.PathEscape(repo.DefaultBranch), &commit)
 				if err == nil {
-					if len(commit.ID) != 40 && len(commit.ID) != 64 {
+					if !validRevision(commit.ID) {
 						err = errors.New("invalid default-branch commit")
 					} else {
 						repo.Revision = commit.ID

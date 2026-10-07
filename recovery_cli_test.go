@@ -222,6 +222,7 @@ func recoveryStart(t *testing.T, f *fixture) (*exec.Cmd, <-chan error) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { out.Close() })
+	f.syncServer()
 	cmd := exec.Command(binary, "--config", f.config)
 	cmd.Stdout, cmd.Stderr = out, out
 	if err := cmd.Start(); err != nil {
