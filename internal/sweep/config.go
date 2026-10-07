@@ -41,12 +41,13 @@ type ScanConfig struct {
 	ExcludePresets []string `yaml:"exclude_presets" json:"exclude_presets,omitempty"`
 }
 type Config struct {
-	Workers     int           `yaml:"workers"`
-	Timeout     time.Duration `yaml:"timeout"`
-	ResultsDir  string        `yaml:"results_dir"`
-	TempDir     string        `yaml:"temp_dir"`
-	Connections []Connection  `yaml:"connections"`
-	Deplens     ScanConfig    `yaml:"deplens"`
+	MinFreeBytes *uint64       `yaml:"min_free_bytes"`
+	Workers      int           `yaml:"workers"`
+	Timeout      time.Duration `yaml:"timeout"`
+	ResultsDir   string        `yaml:"results_dir"`
+	TempDir      string        `yaml:"temp_dir"`
+	Connections  []Connection  `yaml:"connections"`
+	Deplens      ScanConfig    `yaml:"deplens"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -64,6 +65,10 @@ func LoadConfig(path string) (Config, error) {
 	var extra any
 	if err = dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return cfg, errors.New("configuration must contain one YAML document")
+	}
+	if cfg.MinFreeBytes == nil {
+		reserve := defaultMinFreeBytes
+		cfg.MinFreeBytes = &reserve
 	}
 	if cfg.Workers <= 0 {
 		return cfg, errors.New("workers must be positive")

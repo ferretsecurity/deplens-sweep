@@ -14,7 +14,7 @@ import (
 
 func connectionConfig(f *fixture, connections string) {
 	f.t.Helper()
-	config := fmt.Sprintf("results_dir: %s\ntemp_dir: %s\nconnections:\n%sdeplens:\n  executable: %s\n  disable_rules: [shared-rule]\n", f.results, filepath.Join(f.dir, "work"), connections, f.scanner)
+	config := fmt.Sprintf("min_free_bytes: 0\nresults_dir: %s\ntemp_dir: %s\nconnections:\n%sdeplens:\n  executable: %s\n  disable_rules: [shared-rule]\n", f.results, filepath.Join(f.dir, "work"), connections, f.scanner)
 	if err := os.WriteFile(f.config, []byte(config), 0600); err != nil {
 		f.t.Fatal(err)
 	}

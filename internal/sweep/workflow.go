@@ -76,13 +76,13 @@ func Run(ctx context.Context, cfg Config) (batch Batch, err error) {
 	}
 	batch.CompletedAt = time.Now().UTC()
 	batch.Status = "complete"
-	if !batch.DiscoveryComplete || batch.Counts["failed"] > 0 {
+	if !batch.DiscoveryComplete || batch.Counts["failed"] > 0 || batch.Counts["unprocessed"] > 0 {
 		batch.Status = "incomplete"
 	}
 	if err = saveBatch(cfg, &batch); err != nil {
 		return batch, err
 	}
-	if !batch.DiscoveryComplete || batch.Counts["failed"] > 0 {
+	if !batch.DiscoveryComplete || batch.Counts["failed"] > 0 || batch.Counts["unprocessed"] > 0 {
 		return batch, errors.New("batch is incomplete; see saved repository outcomes")
 	}
 	return batch, nil
@@ -97,9 +97,16 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos []
 		outcome Outcome
 		err     error
 	}
-	completed := make(chan completion, cfg.Workers)
+	completed := make(chan completion, min(cfg.Workers, len(repos)))
 	next, active := 0, 0
 	var failure error
+	record := func(result Outcome) {
+		batch.Repositories = append(batch.Repositories, result)
+		if err := saveBatch(cfg, batch); err != nil && failure == nil {
+			failure = err
+			cancel()
+		}
+	}
 	for next < len(repos) || active > 0 {
 		if ctx.Err() != nil && next < len(repos) {
 			for _, repo := range repos[next:] {
@@ -110,8 +117,37 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos []
 				failure = errors.New("batch canceled")
 			}
 		}
-		for next < len(repos) && active < cfg.Workers {
+		for next < len(repos) && active < cfg.Workers && ctx.Err() == nil {
 			repo := repos[next]
+			if repo.Empty {
+				next++
+				record(Outcome{Repository: repo, CheckedAt: time.Now().UTC(), Outcome: "empty"})
+				continue
+			}
+			reused, ok, reuseErr := reusableOutcome(cfg, repo, version)
+			if reuseErr != nil {
+				next++
+				record(Outcome{Repository: repo, CheckedAt: time.Now().UTC(), Outcome: "failed", Error: reuseErr.Error()})
+				continue
+			}
+			if ok {
+				next++
+				record(reused)
+				continue
+			}
+			available, spaceErr := cloneSpaceAvailable(work, *cfg.MinFreeBytes)
+			if spaceErr == nil && !available && active > 0 {
+				break
+			}
+			if spaceErr != nil || !available {
+				message := "insufficient free space for temporary checkout; repository was not started"
+				if spaceErr != nil {
+					message = spaceErr.Error()
+				}
+				next++
+				record(Outcome{Repository: repo, CheckedAt: time.Now().UTC(), Outcome: "unprocessed", Error: message})
+				continue
+			}
 			next++
 			active++
 			go func() {
@@ -120,6 +156,9 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos []
 			}()
 		}
 		if active == 0 {
+			if next < len(repos) {
+				continue
+			}
 			break
 		}
 		result := <-completed
