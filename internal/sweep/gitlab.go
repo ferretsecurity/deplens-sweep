@@ -44,7 +44,7 @@ func gitlabGetURL(ctx context.Context, c Connection, rawURL string, value any) (
 		return nil, errors.New("invalid GitLab request")
 	}
 	req.Header.Set("PRIVATE-TOKEN", c.token)
-	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	client := apiClient()
 	resp, err := apiDo(ctx, client, req, "GitLab")
 	if err != nil {
 		return nil, err

@@ -15,7 +15,9 @@ Known empty-repository responses retain their separate empty outcome.
 the requested delay and at least the normal retry delay. The maximum accepted
 server delay is 30 seconds. A longer or invalid delay produces a visible failure;
 the command does not retry before that server delay. Requests have a 30-second
-HTTP timeout. A successful API response body is limited to 16 MiB. A failed
+HTTP timeout. Fresh HTTP/1 connections prevent hidden transport replays from
+exceeding the three-attempt limit. A successful API response body is limited to
+16 MiB. A failed
 pagination page retries that page, preserving earlier pages and known selected
 repositories. API redirects remain rejected, and pagination stays on the
 configured API origin.

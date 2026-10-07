@@ -17,6 +17,15 @@ import (
 const maxAttempts = 3
 const maxServerDelay = 30 * time.Second
 
+// Fresh HTTP/1 connections prevent the transport from replaying a GET on a
+// reused connection outside the explicit three-attempt budget.
+func apiClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableKeepAlives = true
+	transport.ForceAttemptHTTP2 = false
+	return &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+}
+
 func retryDelay(attempt int) time.Duration { return time.Duration(attempt) * 250 * time.Millisecond }
 
 func waitRetry(ctx context.Context, delay time.Duration) error {

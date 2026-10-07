@@ -468,3 +468,30 @@ func TestRetryDelaysIncreaseBetweenAttempts(t *testing.T) {
 	}
 	f.assertNoSecretOrCheckout(out)
 }
+
+func TestInterruptedRevisionRequestsStillHaveOnlyThreeAttempts(t *testing.T) {
+	f := newFixture(t)
+	original := f.server.Config.Handler
+	var revisionRequests atomic.Int32
+	f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/commits/") {
+			revisionRequests.Add(1)
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			conn.Close()
+			return
+		}
+		original.ServeHTTP(w, r)
+	})
+	out, err := f.run()
+	if err == nil {
+		t.Fatalf("interrupted revision accepted: %s", out)
+	}
+	if revisionRequests.Load() != 3 {
+		t.Fatalf("actual revision requests=%d, limit=3", revisionRequests.Load())
+	}
+	f.assertNoSecretOrCheckout(out)
+}
