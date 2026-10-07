@@ -1,5 +1,7 @@
 # deplens-sweep
 
+See [Locking and interruption recovery](docs/recovery.md) for safe restart behavior.
+
 See [Inventory history and reuse](docs/reuse.md) for result references and reuse inputs.
 
 Run one batch of dependency inventory scans with an installed `deplens` CLI. This
