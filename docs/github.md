@@ -59,7 +59,8 @@ order.
 
 Overlapping organization and repository selections run each provider repository
 ID once per connection. Archived repositories and forks are excluded by default;
-each has its own enabling option. This slice accepts one connection.
+each has its own enabling option. See [docs/connections.md](connections.md) for
+using independent named connections in one batch.
 
 Organization discovery lists every page of the selected organization's accessible
 repositories. Each batch discovers again, so newly added matching repositories
