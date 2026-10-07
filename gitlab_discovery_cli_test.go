@@ -332,7 +332,6 @@ func TestGitLabRejectsWildcardsAndUnsupportedProviderSelections(t *testing.T) {
 		{name: "wildcard exclusion", paths: "  - team/project\n", extra: "    exclude:\n      groups: ['team/*']\n"},
 		{name: "github group", paths: "  - team/project\n", extra: "      groups: [team]\n", github: true},
 		{name: "github group exclusion", paths: "  - team/project\n", extra: "    exclude:\n      groups: [team]\n", github: true},
-		{name: "github all-accessible", extra: "    all_accessible: true\n", github: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1,24 +1,14 @@
 package sweep_test
 
 import (
-	"bufio"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
-	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func newGitHubFixture(t *testing.T) *fixture {
@@ -223,69 +213,17 @@ func TestGitHubDefaultBranchWithSlashPinsResolvedCommit(t *testing.T) {
 
 func TestGitHubPublicAPIRoutesSeparatelyFromCloneHost(t *testing.T) {
 	f := newGitHubFixture(t)
-	// The CLI connects through a local TLS proxy so the real public API hostname
-	// and certificate checks are exercised without a live GitHub account.
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certificate := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "api.github.com"}, DNSNames: []string{"api.github.com"}, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, IsCA: true, BasicConstraintsValid: true}
-	der, err := x509.CreateCertificate(rand.Reader, certificate, certificate, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pair, err := tls.X509KeyPair(certPEM, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	caPath := filepath.Join(f.dir, "ca.pem")
-	if err = os.WriteFile(caPath, certPEM, 0600); err != nil {
-		t.Fatal(err)
-	}
-	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodConnect || r.Host != "api.github.com:443" {
-			t.Errorf("unexpected proxy target: %s %s", r.Method, r.Host)
-			http.Error(w, "unexpected target", 400)
-			return
-		}
-		conn, _, err := w.(http.Hijacker).Hijack()
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		defer conn.Close()
-		fmt.Fprint(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
-		secure := tls.Server(conn, &tls.Config{Certificates: []tls.Certificate{pair}})
-		request, err := http.ReadRequest(bufio.NewReader(secure))
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		if request.Host != "api.github.com" || request.Header.Get("Authorization") != "Bearer test-secret" {
-			t.Errorf("public API request: %s, token header correct: %v", request.Host, request.Header.Get("Authorization") == "Bearer test-secret")
-		}
-		var payload any
+	publicGitHubProxy(f, func(request *http.Request) (any, string) {
 		switch request.URL.Path {
 		case "/repos/team/project":
-			payload = map[string]any{"id": 42, "full_name": "team/project", "default_branch": "main", "clone_url": "https://github.com/team/project.git"}
+			return map[string]any{"id": 42, "full_name": "team/project", "default_branch": "main", "clone_url": "https://github.com/team/project.git"}, ""
 		case "/repos/team/project/commits/main":
-			payload = map[string]string{"sha": f.revision}
+			return map[string]string{"sha": f.revision}, ""
 		default:
 			t.Errorf("unexpected public API path: %s", request.URL.Path)
-			payload = map[string]string{}
+			return map[string]string{}, ""
 		}
-		body, _ := json.Marshal(payload)
-		fmt.Fprintf(secure, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
-	}))
-	t.Cleanup(proxy.Close)
-	t.Setenv("HTTPS_PROXY", proxy.URL)
-	t.Setenv("NO_PROXY", "")
-	t.Setenv("SSL_CERT_FILE", caPath)
+	})
 	data, _ := os.ReadFile(f.config)
 	os.WriteFile(f.config, []byte(strings.ReplaceAll(string(data), f.server.URL, "https://github.com:443/")), 0600)
 	out, err := f.run()
