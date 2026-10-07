@@ -184,7 +184,7 @@ func discoverGitHub(ctx context.Context, c Connection) ([]Repository, []Outcome)
 			}
 			return
 		}
-		if !regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$`).MatchString(commit.SHA) {
+		if !validRevision(commit.SHA) {
 			failure(repo, errors.New("invalid default-branch commit"))
 			return
 		}

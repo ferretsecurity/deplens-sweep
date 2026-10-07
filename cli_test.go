@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -48,6 +49,38 @@ type fixture struct {
 	dir, results, config, repo, revision, scanner string
 	server                                        *httptest.Server
 	projects                                      map[string]map[string]any
+	apiMu                                         sync.Mutex
+	apiHandler                                    http.Handler
+}
+
+func (f *fixture) startServer(handler http.Handler) *httptest.Server {
+	f.setHandler(handler)
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.apiMu.Lock()
+		defer f.apiMu.Unlock()
+		f.apiHandler.ServeHTTP(w, r)
+	}))
+}
+func (f *fixture) setHandler(handler http.Handler) {
+	f.apiMu.Lock()
+	defer f.apiMu.Unlock()
+	f.apiHandler = handler
+}
+func (f *fixture) getHandler() http.Handler {
+	f.apiMu.Lock()
+	defer f.apiMu.Unlock()
+	return f.apiHandler
+}
+func (f *fixture) wrapHandler(handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.apiMu.Lock()
+		defer f.apiMu.Unlock()
+		handler.ServeHTTP(w, r)
+	})
+}
+func (f *fixture) syncServer() {
+	f.apiMu.Lock()
+	f.apiMu.Unlock()
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -60,7 +93,7 @@ func newFixture(t *testing.T) *fixture {
 	mustRun(t, "git", "-C", f.repo, "add", ".")
 	mustRun(t, "git", "-C", f.repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "initial")
 	f.revision = strings.TrimSpace(mustRun(t, "git", "-C", f.repo, "rev-parse", "HEAD"))
-	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.server = f.startServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("PRIVATE-TOKEN") != "test-secret" {
 			t.Errorf("missing API authentication")
 			http.Error(w, "forbidden", 403)
@@ -128,7 +161,12 @@ func mustRun(t *testing.T, name string, args ...string) string {
 	return string(out)
 }
 func (f *fixture) run() ([]byte, error) {
-	return exec.Command(binary, "--config", f.config).CombinedOutput()
+	// Publish fixture edits before requests begin, then wait for the final handler
+	// to finish before callers change response data or inspect callback counters.
+	f.syncServer()
+	out, err := exec.Command(binary, "--config", f.config).CombinedOutput()
+	f.syncServer()
+	return out, err
 }
 func (f *fixture) summary() map[string]any {
 	f.t.Helper()
@@ -428,7 +466,7 @@ func TestCloneFailureCleansUpAndContinues(t *testing.T) {
 
 func TestPermissionErrorIsFailureAndNotEmpty(t *testing.T) {
 	f := newFixture(t)
-	f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "test-secret access denied", 403) })
+	f.setHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "test-secret access denied", 403) }))
 	out, err := f.run()
 	if err == nil {
 		t.Fatal("permission error accepted")

@@ -30,7 +30,7 @@ func githubRepositoryFixture(f *fixture, id int, path string) map[string]any {
 func githubDiscoveryServer(f *fixture, list http.HandlerFunc) {
 	f.t.Helper()
 	f.server.Close()
-	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.server = f.startServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-secret" {
 			f.t.Error("missing GitHub API authentication")
 			http.Error(w, "test-secret denied", 401)
@@ -287,12 +287,12 @@ func TestGitHubPaginationRejectsUntrustedURLsAndLoops(t *testing.T) {
 	for _, mode := range []string{"other-server", "credentials", "fragment", "outside-api", "loop", "empty-next", "invalid-array"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newGitHubFixture(t)
-			destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			destination := httptest.NewServer(f.wrapHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				t.Error("contacted untrusted pagination server")
 				if r.Header.Get("Authorization") != "" {
 					t.Error("token forwarded")
 				}
-			}))
+			})))
 			t.Cleanup(destination.Close)
 			githubDiscoveryServer(f, func(w http.ResponseWriter, r *http.Request) {
 				next := f.server.URL + r.URL.RequestURI()
@@ -332,7 +332,7 @@ func TestGitHubPaginationRejectsUntrustedURLsAndLoops(t *testing.T) {
 func TestGitHubEnterpriseOrganizationPaginationWithInstallationPath(t *testing.T) {
 	f := newGitHubFixture(t)
 	f.server.Close()
-	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.server = f.startServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-secret" {
 			t.Error("missing API authentication")
 		}
@@ -433,7 +433,7 @@ func publicGitHubProxy(f *fixture, respond func(*http.Request) (any, string)) {
 	if err = os.WriteFile(caPath, certPEM, 0600); err != nil {
 		t.Fatal(err)
 	}
-	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	proxy := httptest.NewServer(f.wrapHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodConnect || r.Host != "api.github.com:443" {
 			t.Errorf("unexpected proxy target: %s %s", r.Method, r.Host)
 			http.Error(w, "unexpected target", 400)
@@ -462,7 +462,7 @@ func publicGitHubProxy(f *fixture, respond func(*http.Request) (any, string)) {
 			header = "Link: " + link + "\r\n"
 		}
 		fmt.Fprintf(secure, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n%s\r\n%s", len(body), header, body)
-	}))
+	})))
 	t.Cleanup(proxy.Close)
 	t.Setenv("HTTPS_PROXY", proxy.URL)
 	t.Setenv("NO_PROXY", "")

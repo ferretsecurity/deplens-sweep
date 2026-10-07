@@ -1,6 +1,7 @@
 package sweep
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"debug/buildinfo"
@@ -11,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -28,10 +28,29 @@ func scannerIdentity(cfg ScanConfig) (string, error) {
 	}
 	sum := sha256.Sum256(data)
 	version := "sha256:" + hex.EncodeToString(sum[:])
-	if info, err := buildinfo.ReadFile(path); err == nil && info.Main.Version != "" {
+	if info, err := buildinfo.Read(bytes.NewReader(data)); err == nil && info.Main.Version != "" {
 		version = info.Main.Version + " " + version
 	}
 	return version, nil
+}
+
+func validRevision(revision string) bool {
+	if len(revision) != 40 && len(revision) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(revision)
+	return err == nil
+}
+
+func verifyScanner(cfg ScanConfig, expected string) error {
+	actual, err := scannerIdentity(cfg)
+	if err != nil {
+		return err
+	}
+	if actual != expected {
+		return errors.New("deplens executable changed during batch")
+	}
+	return nil
 }
 
 func gitEnv(c Connection, askpass string) []string {
@@ -101,7 +120,7 @@ func acquire(ctx context.Context, c Connection, repo Repository, checkout, askpa
 	if err := validateCloneURL(c, repo.CloneURL); err != nil {
 		return err
 	}
-	if !regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$`).MatchString(repo.Revision) {
+	if !validRevision(repo.Revision) {
 		return errors.New("invalid target revision")
 	}
 	env := gitEnv(c, askpass)
@@ -221,10 +240,8 @@ func completeAnalysis(output any) error {
 		if !exists {
 			return fmt.Errorf("deplens output is missing %s", key)
 		}
-		if value != nil {
-			if _, ok := value.([]any); !ok {
-				return fmt.Errorf("deplens output has invalid %s", key)
-			}
+		if _, ok := value.([]any); !ok {
+			return fmt.Errorf("deplens output has invalid %s", key)
 		}
 	}
 	sources, _ := root["sources"].([]any)

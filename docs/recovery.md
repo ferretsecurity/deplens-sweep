@@ -17,7 +17,8 @@ command ownership token. Tokens for hosting providers never enter this marker.
 On the next invocation, sweep inspects marked runs in that namespace. It removes
 only directories with valid matching ownership markers whose owner has stopped.
 It preserves unknown entries, symlinks, and markers for other results locations.
-An owner that is still active prevents cleanup. Changing `temp_dir` changes the
+An owner that is still active prevents cleanup. A stopped owner, including an
+unreaped zombie, does not prevent recovery. Changing `temp_dir` changes the
 namespace inspected by recovery, so keep the same temporary root when recovering
 an interrupted invocation.
 
@@ -36,6 +37,9 @@ then renames the complete attempt directory into repository history. Only afterw
 does it atomically replace `latest.json`. An interruption during a staged write
 leaves the previous latest complete reference intact. Startup removes abandoned
 marked staging directories. Unpublished output never qualifies for reuse.
+When preparing a selected repository, sweep repairs latest references from fully
+published complete history, including interruption after the attempt rename and
+before the latest pointer update.
 
 Batch summaries start with `status: running` and no completed time. A completed
 invocation records `complete` or `incomplete` and a completion time. A forced kill

@@ -102,8 +102,8 @@ func recoverWork(scope, results string) error {
 		if !readSavedJSON(scope, filepath.Join(entry.Name(), ".owner.json"), &owner) || owner.Format != "deplens-sweep-work-v1" || owner.Results != results || owner.Run != entry.Name() || owner.PID <= 0 || owner.Started == "" || owner.Token == "" {
 			continue
 		}
-		started, _, err := processIdentity(owner.PID)
-		if err == nil && started == owner.Started {
+		started, state, err := processIdentity(owner.PID)
+		if err == nil && started == owner.Started && state != "Z" && state != "X" {
 			return errors.New("temporary workspace still has an active owner")
 		}
 		if err != nil && !os.IsNotExist(err) {

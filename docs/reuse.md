@@ -17,7 +17,8 @@ change the analysis inputs.
 A result is eligible only when both `scan.json` and `metadata.json` exist as
 regular files, metadata records a complete attempt with matching inputs and valid
 timing, and the scanner JSON passes completeness validation. Sweep rejects links
-in artifact paths. It retries missing or invalid artifacts, failed scans, partial
+in artifact paths. Scanner `sources`, `check_runs`, and `findings` must be arrays;
+null values are invalid. Sweep retries missing or invalid artifacts, failed scans, partial
 extraction, and analysis errors. Unsupported extraction and coverage gaps alone
 remain complete. If custom rule files change during analysis, that attempt fails
 rather than publishing an inventory under the earlier fingerprint.
@@ -27,7 +28,18 @@ Every actual attempt has its own directory under
 metadata and any available scanner output. A successful attempt publishes
 `latest.json` only after saving both artifacts. A failed attempt keeps the older
 latest complete reference. Reuse may select an older matching complete attempt
-when inputs return to a previously scanned state; it does not rewrite latest.
+when inputs return to a previously scanned state. It does not move latest backward.
+Before processing a selected repository, sweep repairs a missing, invalid, or stale
+latest reference to the newest retained complete attempt across all scan inputs.
+This recovers complete attempts whose latest pointer write was interrupted. Failed
+or partial attempts cannot become latest. A failed pointer repair is a visible
+repository failure and makes the batch incomplete.
+
+Sweep checks the installed scanner identity before reuse and immediately before
+and after analysis. If the executable changes during the batch, the affected
+repository fails; its inventory cannot be reused under the earlier identity.
+Previously valid results remain saved. Keep the scanner installation stable during
+a batch, then run a new invocation after an update to scan with the new identity.
 
 Batch repository outcomes use a `result` path relative to the results directory.
 A `reused` outcome points to the original attempt and writes no copy of its

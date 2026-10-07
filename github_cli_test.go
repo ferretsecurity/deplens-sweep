@@ -16,7 +16,7 @@ func newGitHubFixture(t *testing.T) *fixture {
 	f := newFixture(t)
 	f.server.Close()
 	f.projects = map[string]map[string]any{}
-	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.server = f.startServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-secret" || r.Header.Get("PRIVATE-TOKEN") != "" {
 			t.Errorf("missing GitHub API authentication")
 			http.Error(w, "test-secret forbidden", 401)
@@ -87,7 +87,7 @@ func TestGitHubExactRepositoryProducesInventoryAndMetadata(t *testing.T) {
 func TestGitHubConfirmedEmptyIsSeparateFromInaccessibleRepository(t *testing.T) {
 	f := newGitHubFixture(t)
 	f.server.Close()
-	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.server = f.startServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-secret" {
 			t.Error("missing authentication")
 		}
@@ -183,7 +183,7 @@ func TestGitHubDefaultBranchWithSlashPinsResolvedCommit(t *testing.T) {
 	data, _ := os.ReadFile(gitPath)
 	os.WriteFile(gitPath, []byte(strings.ReplaceAll(string(data), "--branch main", "--branch release/stable")), 0700)
 	f.server.Close()
-	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.server = f.startServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-secret" {
 			t.Error("missing API authentication")
 		}
@@ -268,7 +268,7 @@ func TestGitHubErrorsDoNotBecomeEmptyOrExposeCredentials(t *testing.T) {
 				tc.mutate(f.projects["team/project"])
 			}
 			f.server.Close()
-			f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			f.server = f.startServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Header.Get("Authorization") != "Bearer test-secret" {
 					t.Error("missing API authentication")
 				}
@@ -313,15 +313,15 @@ func TestGitHubErrorsDoNotBecomeEmptyOrExposeCredentials(t *testing.T) {
 
 func TestGitHubAPIRedirectDoesNotForwardToken(t *testing.T) {
 	f := newGitHubFixture(t)
-	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	destination := httptest.NewServer(f.wrapHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("followed API redirect")
 		if r.Header.Get("Authorization") != "" {
 			t.Error("token forwarded to redirect destination")
 		}
-	}))
+	})))
 	t.Cleanup(destination.Close)
 	f.server.Close()
-	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.server = f.startServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, destination.URL+"/test-secret", http.StatusFound)
 	}))
 	t.Cleanup(f.server.Close)

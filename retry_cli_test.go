@@ -22,9 +22,9 @@ func TestTemporaryProviderFailuresRecoverDuringDiscoveryAndRevisionResolution(t 
 			} else {
 				f = newFixture(t)
 			}
-			original := f.server.Config.Handler
+			original := f.getHandler()
 			var discovery, revision atomic.Int32
-			f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			f.setHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				counter := &discovery
 				if strings.Contains(r.URL.Path, "/commits/") {
 					counter = &revision
@@ -35,7 +35,7 @@ func TestTemporaryProviderFailuresRecoverDuringDiscoveryAndRevisionResolution(t 
 					return
 				}
 				original.ServeHTTP(w, r)
-			})
+			}))
 			out, err := f.run()
 			if err != nil {
 				t.Fatalf("temporary failures not recovered: %v %s", err, out)
@@ -94,10 +94,10 @@ func TestProviderRetriesAreBoundedAndPermissionFailuresArePermanent(t *testing.T
 					f = newFixture(t)
 				}
 				var requests atomic.Int32
-				f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				f.setHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					requests.Add(1)
 					http.Error(w, "test-secret rejected", status)
-				})
+				}))
 				out, err := f.run()
 				if err == nil {
 					t.Fatalf("API failure accepted: %s", out)
@@ -127,16 +127,16 @@ func TestGitHubRateLimit403NeedsPositiveEvidence(t *testing.T) {
 	for _, header := range []string{"Retry-After", "X-RateLimit-Remaining"} {
 		t.Run(header, func(t *testing.T) {
 			f := newGitHubFixture(t)
-			original := f.server.Config.Handler
+			original := f.getHandler()
 			var requests atomic.Int32
-			f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			f.setHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if requests.Add(1) == 1 {
 					w.Header().Set(header, "0")
 					http.Error(w, "test-secret limited", 403)
 					return
 				}
 				original.ServeHTTP(w, r)
-			})
+			}))
 			out, err := f.run()
 			if err != nil {
 				t.Fatalf("rate limit not retried: %v %s", err, out)
@@ -153,10 +153,10 @@ func TestRetryAfterSecondsAndDateDelayTheNextRequest(t *testing.T) {
 	for _, format := range []string{"seconds", "date"} {
 		t.Run(format, func(t *testing.T) {
 			f := newFixture(t)
-			original := f.server.Config.Handler
+			original := f.getHandler()
 			var requests atomic.Int32
 			var earliest atomic.Int64
-			f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			f.setHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if requests.Add(1) == 1 {
 					if format == "seconds" {
 						earliest.Store(time.Now().Add(time.Second).UnixNano())
@@ -173,7 +173,7 @@ func TestRetryAfterSecondsAndDateDelayTheNextRequest(t *testing.T) {
 					t.Errorf("retried before server delay elapsed")
 				}
 				original.ServeHTTP(w, r)
-			})
+			}))
 			out, err := f.run()
 			if err != nil {
 				t.Fatalf("delayed retry: %v %s", err, out)
@@ -186,11 +186,11 @@ func TestRetryAfterSecondsAndDateDelayTheNextRequest(t *testing.T) {
 func TestExcessiveServerRetryDelayFailsWithoutRetryingEarly(t *testing.T) {
 	f := newFixture(t)
 	var requests atomic.Int32
-	f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.setHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		w.Header().Set("Retry-After", "31")
 		http.Error(w, "test-secret limited", 429)
-	})
+	}))
 	started := time.Now()
 	out, err := f.run()
 	if err == nil {
@@ -207,16 +207,16 @@ func TestExcessiveServerRetryDelayFailsWithoutRetryingEarly(t *testing.T) {
 
 func TestInterruptedAPIResponseRetriesTheSameOperation(t *testing.T) {
 	f := newFixture(t)
-	original := f.server.Config.Handler
+	original := f.getHandler()
 	var requests atomic.Int32
-	f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.setHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if requests.Add(1) == 1 {
 			w.Header().Set("Content-Length", "4096")
 			fmt.Fprint(w, `{"message":"test-secret`)
 			return
 		}
 		original.ServeHTTP(w, r)
-	})
+	}))
 	out, err := f.run()
 	if err != nil {
 		t.Fatalf("interrupted response not recovered: %v %s", err, out)
@@ -338,10 +338,10 @@ func TestPaginationRetriesOnlyTheFailedPageAndRetainsKnownRepositories(t *testin
 	for _, exhausted := range []bool{false, true} {
 		t.Run(fmt.Sprint(exhausted), func(t *testing.T) {
 			f := newFixture(t)
-			original := f.server.Config.Handler
+			original := f.getHandler()
 			second := map[string]any{"id": 43, "path_with_namespace": "team/second", "default_branch": "main", "http_url_to_repo": strings.Replace(f.server.URL, "http:", "https:", 1) + "/team/second.git"}
 			var firstPage, secondPage atomic.Int32
-			f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			f.setHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/api/v4/groups/team/projects" {
 					original.ServeHTTP(w, r)
 					return
@@ -357,7 +357,7 @@ func TestPaginationRetriesOnlyTheFailedPageAndRetainsKnownRepositories(t *testin
 					return
 				}
 				json.NewEncoder(w).Encode([]any{second})
-			})
+			}))
 			data, _ := os.ReadFile(f.config)
 			data = []byte(strings.Replace(string(data), "repositories:\n        - team/project", "groups: [team]", 1))
 			os.WriteFile(f.config, data, 0600)
@@ -394,15 +394,15 @@ func TestRetriedAPIRedirectCannotForwardCredentials(t *testing.T) {
 				f = newFixture(t)
 			}
 			var destinationRequests, sourceRequests atomic.Int32
-			destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { destinationRequests.Add(1) }))
+			destination := httptest.NewServer(f.wrapHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { destinationRequests.Add(1) })))
 			defer destination.Close()
-			f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			f.setHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if sourceRequests.Add(1) == 1 {
 					http.Error(w, "test-secret temporary failure", 503)
 					return
 				}
 				http.Redirect(w, r, destination.URL+"/test-secret", http.StatusFound)
-			})
+			}))
 			out, err := f.run()
 			if err == nil {
 				t.Fatalf("redirect accepted: %s", out)
@@ -442,7 +442,7 @@ func TestRetryDelaysIncreaseBetweenAttempts(t *testing.T) {
 	f := newFixture(t)
 	var calls atomic.Int32
 	var first, second atomic.Int64
-	f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.setHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		now := time.Now()
 		switch calls.Add(1) {
 		case 1:
@@ -458,7 +458,7 @@ func TestRetryDelaysIncreaseBetweenAttempts(t *testing.T) {
 			}
 		}
 		http.Error(w, "test-secret unavailable", 503)
-	})
+	}))
 	out, err := f.run()
 	if err == nil {
 		t.Fatalf("exhausted error accepted: %s", out)
@@ -471,9 +471,9 @@ func TestRetryDelaysIncreaseBetweenAttempts(t *testing.T) {
 
 func TestInterruptedRevisionRequestsStillHaveOnlyThreeAttempts(t *testing.T) {
 	f := newFixture(t)
-	original := f.server.Config.Handler
+	original := f.getHandler()
 	var revisionRequests atomic.Int32
-	f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.setHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/commits/") {
 			revisionRequests.Add(1)
 			conn, _, err := w.(http.Hijacker).Hijack()
@@ -485,7 +485,7 @@ func TestInterruptedRevisionRequestsStillHaveOnlyThreeAttempts(t *testing.T) {
 			return
 		}
 		original.ServeHTTP(w, r)
-	})
+	}))
 	out, err := f.run()
 	if err == nil {
 		t.Fatalf("interrupted revision accepted: %s", out)
