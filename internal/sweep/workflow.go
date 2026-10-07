@@ -20,9 +20,12 @@ func Run(ctx context.Context, cfg Config) (batch Batch, err error) {
 	if err != nil {
 		return batch, err
 	}
-	if err = os.MkdirAll(cfg.ResultsDir, 0700); err != nil {
-		return batch, errors.New("cannot create results directory")
+	lock, canonical, err := lockResults(cfg.ResultsDir)
+	if err != nil {
+		return batch, err
 	}
+	defer lock.Close()
+	cfg.ResultsDir = canonical
 	if cfg.TempDir != "" {
 		if err = os.MkdirAll(cfg.TempDir, 0700); err != nil {
 			return batch, errors.New("cannot create temporary checkout directory")
