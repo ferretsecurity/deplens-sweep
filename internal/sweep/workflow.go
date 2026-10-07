@@ -41,7 +41,13 @@ func Run(ctx context.Context, cfg Config) (batch Batch, err error) {
 		return batch, err
 	}
 	for _, c := range cfg.Connections {
-		repos, failures := discoverGitLab(ctx, c)
+		var repos []Repository
+		var failures []Outcome
+		if c.Provider == "github" {
+			repos, failures = discoverGitHub(ctx, c)
+		} else {
+			repos, failures = discoverGitLab(ctx, c)
+		}
 		if len(failures) > 0 {
 			batch.DiscoveryComplete = false
 		}
@@ -122,15 +128,31 @@ func processRepository(ctx context.Context, cfg Config, c Connection, repo Repos
 	if repo.Empty {
 		return result, nil
 	}
+	fingerprint, fingerprintErr := inputFingerprint(cfg.Deplens, version)
+	if fingerprintErr != nil {
+		return Outcome{Repository: repo, Outcome: "failed", CheckedAt: started, Error: fingerprintErr.Error()}, nil
+	}
+	if reused, ok := findReusable(cfg, repo, fingerprint); ok {
+		return reused, nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 	ref := filepath.Join(repositoryDir(repo), "attempts", newID())
 	checkout := filepath.Join(work, "checkout-"+newID())
-	meta := Metadata{Repository: repo, ScannerVersion: version, Configuration: cfg.Deplens, Scope: Scope{Shallow: true}, StartedAt: started, Outcome: "failed"}
+	meta := Metadata{Repository: repo, ScannerVersion: version, InputFingerprint: fingerprint, Configuration: cfg.Deplens, Scope: Scope{Shallow: true}, StartedAt: started, Outcome: "failed"}
 	err := acquire(ctx, c, repo, checkout, askpass)
 	var output any
 	if err == nil {
+		scanned := time.Now().UTC()
+		meta.ScannedAt = &scanned
+		result.ScannedAt = &scanned
 		output, err = analyze(ctx, cfg, checkout)
+		if err == nil {
+			after, fingerprintErr := inputFingerprint(cfg.Deplens, version)
+			if fingerprintErr != nil || after != fingerprint {
+				err = errors.New("scan configuration changed during analysis")
+			}
+		}
 	}
 	cleanupErr := os.RemoveAll(checkout)
 	if cleanupErr != nil {
