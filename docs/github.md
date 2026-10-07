@@ -1,6 +1,7 @@
-# GitHub repository selection
+# GitHub repository and organization selection
 
-Use `provider: github` and exact `owner/repository` paths. Public GitHub uses
+Use `provider: github` with exact `owner/repository` paths, organization names,
+or an explicit `all_accessible: true` opt-in. Public GitHub uses
 `https://api.github.com` for discovery and `https://github.com` for HTTPS clones.
 For GitHub Enterprise Server, set the hosting server URL, without `/api/v3`.
 The CLI appends `/api/v3` for API requests and checks that clone URLs use HTTPS
@@ -17,9 +18,14 @@ connections:
       repositories:
         - example/api
         - example/web
+      organizations:
+        - example
     exclude:
       repositories:
         - example/web
+      organizations:
+        - excluded-team
+    all_accessible: false
     include_archived: false
     include_forks: false
 deplens:
@@ -44,11 +50,54 @@ child environment and askpass password prompt. Tokens are excluded from clone
 URLs, process arguments, command diagnostics, and saved results. API redirects
 are rejected. Provider error response bodies are not retained.
 
-Exclusions override inclusions, including the canonical path returned by GitHub.
-Duplicate IDs are processed once within the connection. Archived repositories
-and forks are excluded by default; each has its own enabling option. This slice
-accepts one connection and exact repository selection. It does not discover
-organizations or all repositories accessible to the token.
+Repository exclusions match exact paths. Organization exclusions match the
+repository owner and override explicit repository inclusions, including the
+current owner returned by GitHub after a rename. Excluding `example` does not
+exclude `example-other`. Organizations do not have subgroup selection semantics,
+and nested names or wildcards are rejected. Exclusions win regardless of YAML
+order.
+
+Overlapping organization and repository selections run each provider repository
+ID once per connection. Archived repositories and forks are excluded by default;
+each has its own enabling option. This slice accepts one connection.
+
+Organization discovery lists every page of the selected organization's accessible
+repositories. Each batch discovers again, so newly added matching repositories
+are picked up. To include the authenticated user's accessible repositories,
+set `all_accessible: true` on the connection, with optional exclusions:
+
+```yaml
+connections:
+  - name: github
+    provider: github
+    server_url: https://github.com
+    token_env: GITHUB_TOKEN
+    all_accessible: true
+    exclude:
+      repositories: [example/legacy]
+      organizations: [excluded-team]
+```
+
+Add the top-level `results_dir` and `deplens` settings as in the first example.
+All-accessible discovery uses GitHub's authenticated-user repository listing for
+owned repositories, collaborator access, and organization membership. It does
+not enumerate every public repository on GitHub. This opt-in can be combined
+with exact repository and organization selections. All exclusions and
+archive/fork defaults still apply. Missing inclusions remain a configuration
+error unless this opt-in is true.
+
+Pagination follows `rel="next"` links on the configured API origin. Public
+GitHub pagination stays on `api.github.com`; enterprise pagination stays under
+the configured installation's `/api/v3`. Untrusted URLs, loops, and invalid
+responses cause discovery failure without discarding already known repositories.
+A failed later page or an authorization error records a failed outcome, sets
+`discovery_complete: false`, and makes the command exit nonzero. Independent
+selected repositories and repositories from successful earlier pages still get
+processed. A successful empty listing has no repository outcomes. Saved history
+remains available when a repository disappears from the current selection.
+
+See GitHub's [repository API reference](https://docs.github.com/en/rest/repos/repos)
+for organization and authenticated-user repository visibility.
 
 The CLI resolves the default branch commit before cloning and checks out that
 exact commit, including if the branch advances during acquisition. It uses a

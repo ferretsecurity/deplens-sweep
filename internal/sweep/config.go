@@ -15,8 +15,9 @@ import (
 )
 
 type Selection struct {
-	Repositories []string `yaml:"repositories" json:"repositories,omitempty"`
-	Groups       []string `yaml:"groups" json:"groups,omitempty"`
+	Repositories  []string `yaml:"repositories" json:"repositories,omitempty"`
+	Groups        []string `yaml:"groups" json:"groups,omitempty"`
+	Organizations []string `yaml:"organizations" json:"organizations,omitempty"`
 }
 type Connection struct {
 	Name            string    `yaml:"name" json:"name"`
@@ -94,16 +95,26 @@ func LoadConfig(path string) (Config, error) {
 		if c.Provider == "github" && u.Scheme == "https" && strings.EqualFold(u.Hostname(), "github.com") && (u.Port() == "" || u.Port() == "443") && strings.Trim(u.Path, "/") == "" {
 			c.ServerURL = "https://github.com"
 		}
-		if c.Provider == "github" && (len(c.Include.Groups) > 0 || len(c.Exclude.Groups) > 0 || c.AllAccessible) {
-			return cfg, errors.New("group and all-accessible selection are supported only for gitlab")
+		if c.Provider == "github" && (len(c.Include.Groups) > 0 || len(c.Exclude.Groups) > 0) {
+			return cfg, errors.New("group selection is supported only for gitlab")
 		}
-		if len(c.Include.Repositories) == 0 && len(c.Include.Groups) == 0 && !c.AllAccessible {
+		if c.Provider == "gitlab" && (len(c.Include.Organizations) > 0 || len(c.Exclude.Organizations) > 0) {
+			return cfg, errors.New("organization selection is supported only for github")
+		}
+		for _, names := range [][]string{c.Include.Organizations, c.Exclude.Organizations} {
+			for _, name := range names {
+				if strings.Contains(name, "/") {
+					return cfg, errors.New("organization selections must be exact owner names")
+				}
+			}
+		}
+		if len(c.Include.Repositories) == 0 && len(c.Include.Groups) == 0 && len(c.Include.Organizations) == 0 && !c.AllAccessible {
 			return cfg, errors.New("explicit repository selection is required")
 		}
-		for _, paths := range [][]string{c.Include.Repositories, c.Exclude.Repositories, c.Include.Groups, c.Exclude.Groups} {
+		for _, paths := range [][]string{c.Include.Repositories, c.Exclude.Repositories, c.Include.Groups, c.Exclude.Groups, c.Include.Organizations, c.Exclude.Organizations} {
 			for _, p := range paths {
 				if p == "" || strings.Trim(p, "/") != p || strings.ContainsAny(p, "*?\\\n\r") || strings.Contains(p, "..") {
-					return cfg, errors.New("repository and group selections must be exact nonempty paths")
+					return cfg, errors.New("repository, group and organization selections must be exact nonempty paths")
 				}
 			}
 		}
