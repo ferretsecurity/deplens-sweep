@@ -16,6 +16,7 @@ import (
 
 type Selection struct {
 	Repositories []string `yaml:"repositories" json:"repositories,omitempty"`
+	Groups       []string `yaml:"groups" json:"groups,omitempty"`
 }
 type Connection struct {
 	Name            string    `yaml:"name" json:"name"`
@@ -24,6 +25,7 @@ type Connection struct {
 	TokenEnv        string    `yaml:"token_env" json:"-"`
 	Include         Selection `yaml:"include" json:"include"`
 	Exclude         Selection `yaml:"exclude" json:"exclude"`
+	AllAccessible   bool      `yaml:"all_accessible" json:"all_accessible"`
 	IncludeArchived bool      `yaml:"include_archived" json:"include_archived"`
 	IncludeForks    bool      `yaml:"include_forks" json:"include_forks"`
 	token           string
@@ -92,13 +94,16 @@ func LoadConfig(path string) (Config, error) {
 		if c.Provider == "github" && u.Scheme == "https" && strings.EqualFold(u.Hostname(), "github.com") && (u.Port() == "" || u.Port() == "443") && strings.Trim(u.Path, "/") == "" {
 			c.ServerURL = "https://github.com"
 		}
-		if len(c.Include.Repositories) == 0 {
+		if c.Provider == "github" && (len(c.Include.Groups) > 0 || len(c.Exclude.Groups) > 0 || c.AllAccessible) {
+			return cfg, errors.New("group and all-accessible selection are supported only for gitlab")
+		}
+		if len(c.Include.Repositories) == 0 && len(c.Include.Groups) == 0 && !c.AllAccessible {
 			return cfg, errors.New("explicit repository selection is required")
 		}
-		for _, paths := range [][]string{c.Include.Repositories, c.Exclude.Repositories} {
+		for _, paths := range [][]string{c.Include.Repositories, c.Exclude.Repositories, c.Include.Groups, c.Exclude.Groups} {
 			for _, p := range paths {
 				if p == "" || strings.Trim(p, "/") != p || strings.ContainsAny(p, "*?\\\n\r") || strings.Contains(p, "..") {
-					return cfg, errors.New("repository selections must be exact nonempty project paths")
+					return cfg, errors.New("repository and group selections must be exact nonempty paths")
 				}
 			}
 		}
