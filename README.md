@@ -155,3 +155,5 @@ The real-scanner test skips when `SWEEP_REAL_DEPLENS` is unset.
 
 Worker limits and per-repository deadlines are described in
 [execution settings](docs/execution.md).
+
+Temporary API and clone failures use [bounded retries](docs/retries.md).
