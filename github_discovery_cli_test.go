@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -511,4 +512,37 @@ func TestGitHubPublicOrganizationAndAllAccessiblePagination(t *testing.T) {
 			f.assertNoSecretOrCheckout(out)
 		})
 	}
+}
+
+func TestGitHubOrganizationRetriesOnlyTheFailedPage(t *testing.T) {
+	f := newGitHubFixture(t)
+	f.projects["team/library"] = githubRepositoryFixture(f, 43, "team/library")
+	var firstPage, secondPage atomic.Int32
+	githubDiscoveryServer(f, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") != "2" {
+			firstPage.Add(1)
+			w.Header().Set("Link", fmt.Sprintf(`<%s/api/v3/orgs/team/repos?page=2>; rel="next"`, f.server.URL))
+			json.NewEncoder(w).Encode([]any{f.projects["team/project"]})
+			return
+		}
+		if secondPage.Add(1) == 1 {
+			w.Header().Set("Retry-After", "0")
+			http.Error(w, "test-secret unavailable", 503)
+			return
+		}
+		json.NewEncoder(w).Encode([]any{f.projects["team/library"]})
+	})
+	writeGitHubConfig(f, "", "      organizations: [team]\n")
+	out, err := f.run()
+	if err != nil {
+		t.Fatalf("recovered page failure: %v %s", err, out)
+	}
+	if firstPage.Load() != 1 || secondPage.Load() != 2 {
+		t.Fatalf("discovery replayed earlier page: first=%d second=%d", firstPage.Load(), secondPage.Load())
+	}
+	summary := f.summary()
+	if summary["discovery_complete"] != true || summary["counts"].(map[string]any)["complete"] != float64(2) {
+		t.Fatalf("recovered discovery: %#v", summary)
+	}
+	f.assertNoSecretOrCheckout(out)
 }
