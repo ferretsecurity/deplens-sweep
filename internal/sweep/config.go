@@ -74,8 +74,8 @@ func LoadConfig(path string) (Config, error) {
 	if cfg.ResultsDir == "" {
 		return cfg, errors.New("results_dir is required")
 	}
-	if len(cfg.Connections) != 1 {
-		return cfg, errors.New("this version requires exactly one connection")
+	if len(cfg.Connections) == 0 {
+		return cfg, errors.New("at least one connection is required")
 	}
 	names := map[string]bool{}
 	for i := range cfg.Connections {
