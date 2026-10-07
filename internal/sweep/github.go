@@ -41,10 +41,10 @@ func githubGet(ctx context.Context, c Connection, path string, value any) error 
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/vnd.github+json")
-	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
-	resp, err := client.Do(req)
+	client := apiClient()
+	resp, err := apiDo(ctx, client, req, "GitHub")
 	if err != nil {
-		return errors.New("GitHub API request failed")
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
