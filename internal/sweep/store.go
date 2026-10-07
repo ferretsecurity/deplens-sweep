@@ -13,10 +13,11 @@ import (
 
 type Outcome struct {
 	Repository
-	Outcome   string    `json:"outcome"`
-	Result    string    `json:"result,omitempty"`
-	Error     string    `json:"error,omitempty"`
-	CheckedAt time.Time `json:"checked_at"`
+	Outcome   string     `json:"outcome"`
+	Result    string     `json:"result,omitempty"`
+	Error     string     `json:"error,omitempty"`
+	CheckedAt time.Time  `json:"checked_at"`
+	ScannedAt *time.Time `json:"scanned_at,omitempty"`
 }
 type Scope struct {
 	Shallow    bool `json:"shallow"`
@@ -25,13 +26,15 @@ type Scope struct {
 }
 type Metadata struct {
 	Repository
-	ScannerVersion string     `json:"scanner_version"`
-	Configuration  ScanConfig `json:"configuration"`
-	Scope          Scope      `json:"scope"`
-	StartedAt      time.Time  `json:"started_at"`
-	CompletedAt    time.Time  `json:"completed_at"`
-	Outcome        string     `json:"outcome"`
-	Error          string     `json:"error,omitempty"`
+	ScannerVersion   string     `json:"scanner_version"`
+	InputFingerprint string     `json:"input_fingerprint"`
+	Configuration    ScanConfig `json:"configuration"`
+	Scope            Scope      `json:"scope"`
+	StartedAt        time.Time  `json:"started_at"`
+	ScannedAt        *time.Time `json:"scanned_at,omitempty"`
+	CompletedAt      time.Time  `json:"completed_at"`
+	Outcome          string     `json:"outcome"`
+	Error            string     `json:"error,omitempty"`
 }
 type Batch struct {
 	SchemaVersion     int            `json:"schema_version"`
