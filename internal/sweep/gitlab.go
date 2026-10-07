@@ -40,9 +40,9 @@ func gitlabGet(ctx context.Context, c Connection, path string, value any) error 
 	}
 	req.Header.Set("PRIVATE-TOKEN", c.token)
 	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
-	resp, err := client.Do(req)
+	resp, err := apiDo(ctx, client, req, "GitLab")
 	if err != nil {
-		return errors.New("GitLab API request failed")
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
