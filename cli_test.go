@@ -111,7 +111,7 @@ exec /usr/bin/git "$@"
 }
 func (f *fixture) writeConfig(paths, extra string) {
 	f.t.Helper()
-	data := fmt.Sprintf("results_dir: %s\ntemp_dir: %s\nconnections:\n  - name: team\n    provider: gitlab\n    server_url: %s\n    token_env: SWEEP_TEST_TOKEN\n    include:\n      repositories:\n%s%sdeplens:\n  executable: %s\n", f.results, filepath.Join(f.dir, "work"), f.server.URL, indent(paths, 6), extra, f.scanner)
+	data := fmt.Sprintf("min_free_bytes: 0\nresults_dir: %s\ntemp_dir: %s\nconnections:\n  - name: team\n    provider: gitlab\n    server_url: %s\n    token_env: SWEEP_TEST_TOKEN\n    include:\n      repositories:\n%s%sdeplens:\n  executable: %s\n", f.results, filepath.Join(f.dir, "work"), f.server.URL, indent(paths, 6), extra, f.scanner)
 	if err := os.WriteFile(f.config, []byte(data), 0600); err != nil {
 		f.t.Fatal(err)
 	}

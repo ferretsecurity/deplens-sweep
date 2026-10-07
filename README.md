@@ -157,3 +157,5 @@ Worker limits and per-repository deadlines are described in
 [execution settings](docs/execution.md).
 
 Temporary API and clone failures use [bounded retries](docs/retries.md).
+
+Clone admission uses a [free-space reserve](docs/disk.md).
