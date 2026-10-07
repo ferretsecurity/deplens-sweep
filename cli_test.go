@@ -445,7 +445,7 @@ func TestPermissionErrorIsFailureAndNotEmpty(t *testing.T) {
 }
 
 func TestUnsupportedConfigurationIsRejected(t *testing.T) {
-	for _, extra := range []string{"workers: 3\n", "connections: []\n", "timeout: 60m\n", "all_accessible: true\n"} {
+	for _, extra := range []string{"workers: 0\n", "connections: []\n", "timeout: 0s\n", "all_accessible: true\n"} {
 		t.Run(strings.TrimSpace(extra), func(t *testing.T) {
 			f := newFixture(t)
 			data, _ := os.ReadFile(f.config)

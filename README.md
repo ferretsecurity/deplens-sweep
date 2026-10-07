@@ -150,3 +150,6 @@ SWEEP_REAL_DEPLENS=/absolute/path/to/deplens go test ./...
 The final command also runs the real scanner integration. It scans a known
 requirements file and checks its extracted dependency through the saved JSON.
 The real-scanner test skips when `SWEEP_REAL_DEPLENS` is unset.
+
+Worker limits and per-repository deadlines are described in
+[execution settings](docs/execution.md).
