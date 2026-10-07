@@ -1,5 +1,7 @@
 # deplens-sweep
 
+See [Multiple connections](docs/connections.md) for mixed providers and independent accounts.
+
 See [Locking and interruption recovery](docs/recovery.md) for safe restart behavior.
 
 See [Inventory history and reuse](docs/reuse.md) for result references and reuse inputs.
