@@ -72,14 +72,17 @@ func LoadConfig(path string) (Config, error) {
 			return cfg, errors.New("connection names must be unique and contain only letters, numbers, underscores or hyphens")
 		}
 		names[c.Name] = true
-		if c.Provider != "gitlab" {
-			return cfg, errors.New("this version supports only provider gitlab")
+		if c.Provider != "gitlab" && c.Provider != "github" {
+			return cfg, errors.New("provider must be gitlab or github")
 		}
 		u, e := url.Parse(c.ServerURL)
 		if e != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 			return cfg, errors.New("server_url must be an HTTP(S) server URL without credentials, query or fragment")
 		}
 		c.ServerURL = strings.TrimRight(c.ServerURL, "/")
+		if c.Provider == "github" && u.Scheme == "https" && strings.EqualFold(u.Hostname(), "github.com") && (u.Port() == "" || u.Port() == "443") && strings.Trim(u.Path, "/") == "" {
+			c.ServerURL = "https://github.com"
+		}
 		if len(c.Include.Repositories) == 0 {
 			return cfg, errors.New("explicit repository selection is required")
 		}

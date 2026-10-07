@@ -4,6 +4,8 @@ Run one batch of dependency inventory scans with an installed `deplens` CLI. Thi
 initial version supports one named GitLab connection and exact project paths.
 It processes repositories sequentially and keeps each scan attempt on disk.
 
+GitHub configuration is described in [docs/github.md](docs/github.md).
+
 ## Build and run
 
 Install Go 1.25.6 or newer, Git, and deplens. HTTPS cloning uses Git's askpass
