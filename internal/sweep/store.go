@@ -1,6 +1,7 @@
 package sweep
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,6 +11,34 @@ import (
 	"path/filepath"
 	"time"
 )
+
+func saveAttempt(ctx context.Context, cfg Config, ref string, output any, meta Metadata) error {
+	owner, ok := ctx.Value(workOwnerKey{}).(workOwner)
+	if !ok {
+		return fmt.Errorf("cannot identify attempt staging owner")
+	}
+	stage := filepath.Join(cfg.ResultsDir, ".staging", owner.Run, filepath.Base(ref))
+	if err := os.Mkdir(stage, 0700); err != nil {
+		return fmt.Errorf("cannot create attempt staging directory")
+	}
+	defer os.RemoveAll(stage)
+	if output != nil {
+		if err := saveJSON(filepath.Join(stage, "scan.json"), redactValue(output, cfg)); err != nil {
+			return fmt.Errorf("cannot save scan output")
+		}
+	}
+	if err := saveJSON(filepath.Join(stage, "metadata.json"), redactValue(meta, cfg)); err != nil {
+		return fmt.Errorf("cannot save scan metadata")
+	}
+	final := filepath.Join(cfg.ResultsDir, ref)
+	if err := os.MkdirAll(filepath.Dir(final), 0700); err != nil {
+		return fmt.Errorf("cannot create result history")
+	}
+	if err := os.Rename(stage, final); err != nil {
+		return fmt.Errorf("cannot publish saved attempt")
+	}
+	return nil
+}
 
 type Outcome struct {
 	Repository
@@ -39,6 +68,7 @@ type Metadata struct {
 type Batch struct {
 	SchemaVersion     int            `json:"schema_version"`
 	ID                string         `json:"batch_id"`
+	Status            string         `json:"status"`
 	StartedAt         time.Time      `json:"started_at"`
 	CompletedAt       time.Time      `json:"completed_at,omitempty"`
 	Selections        []Connection   `json:"selections"`
