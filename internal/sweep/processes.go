@@ -85,6 +85,7 @@ func contextFailure(ctx context.Context) error {
 func gitCommand(ctx context.Context, env []string, args ...string) (string, error) {
 	cmd := processCommand(ctx, "git", args...)
 	cmd.Env = env
+	setProcessOwner(cmd, ctx)
 	out, err := commandOutput(cmd)
 	if failure := contextFailure(ctx); failure != nil {
 		return "", failure
@@ -183,6 +184,7 @@ func analyze(ctx context.Context, cfg Config, checkout string) (any, error) {
 			cmd.Env = append(cmd.Env, e)
 		}
 	}
+	setProcessOwner(cmd, ctx)
 	raw, processErr := commandOutput(cmd)
 	var output any
 	decodeErr := json.Unmarshal(raw, &output)
