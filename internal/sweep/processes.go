@@ -35,8 +35,15 @@ func scannerIdentity(cfg ScanConfig) (string, error) {
 }
 
 func gitEnv(c Connection, askpass string) []string {
-	env := append([]string{}, os.Environ()...)
-	env = append(env, "GIT_ASKPASS="+askpass, "GIT_TERMINAL_PROMPT=0", "GIT_LFS_SKIP_SMUDGE=1", "SWEEP_GIT_TOKEN="+c.token, "GIT_CONFIG_COUNT=2", "GIT_CONFIG_KEY_0=credential.helper", "GIT_CONFIG_VALUE_0=", "GIT_CONFIG_KEY_1=core.hooksPath", "GIT_CONFIG_VALUE_1=/dev/null")
+	env := []string{}
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(name, "GIT_TRACE") || name == "GIT_CURL_VERBOSE" || name == "GIT_CONFIG_PARAMETERS" {
+			continue
+		}
+		env = append(env, entry)
+	}
+	env = append(env, "LC_ALL=C", "GIT_ASKPASS="+askpass, "GIT_TERMINAL_PROMPT=0", "GIT_LFS_SKIP_SMUDGE=1", "SWEEP_GIT_TOKEN="+c.token, "GIT_CONFIG_COUNT=2", "GIT_CONFIG_KEY_0=credential.helper", "GIT_CONFIG_VALUE_0=", "GIT_CONFIG_KEY_1=core.hooksPath", "GIT_CONFIG_VALUE_1=/dev/null")
 	return env
 }
 
@@ -78,12 +85,15 @@ func contextFailure(ctx context.Context) error {
 func gitCommand(ctx context.Context, env []string, args ...string) (string, error) {
 	cmd := processCommand(ctx, "git", args...)
 	cmd.Env = env
+	setProcessOwner(cmd, ctx)
 	out, err := commandOutput(cmd)
 	if failure := contextFailure(ctx); failure != nil {
 		return "", failure
 	}
 	if err != nil {
-		return "", errors.New("Git operation failed")
+		var exit *exec.ExitError
+		temporary := errors.As(err, &exit) && temporaryCloneError(exit.Stderr)
+		return "", &gitOperationError{temporary: temporary}
 	}
 	return strings.TrimSpace(string(out)), nil
 }
@@ -95,7 +105,26 @@ func acquire(ctx context.Context, c Connection, repo Repository, checkout, askpa
 		return errors.New("invalid target revision")
 	}
 	env := gitEnv(c, askpass)
-	_, err := gitCommand(ctx, env, "clone", "--depth", "1", "--no-checkout", "--single-branch", "--no-recurse-submodules", "--branch", repo.DefaultBranch, "--", repo.CloneURL, checkout)
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		_, err = gitCommand(ctx, env, "clone", "--depth", "1", "--no-checkout", "--single-branch", "--no-recurse-submodules", "--branch", repo.DefaultBranch, "--", repo.CloneURL, checkout)
+		if err == nil {
+			break
+		}
+		var operation *gitOperationError
+		if !errors.As(err, &operation) || !operation.temporary {
+			return err
+		}
+		if attempt == maxAttempts {
+			return errors.New("Git clone retries exhausted after 3 attempts (temporary network or server error)")
+		}
+		if cleanupErr := os.RemoveAll(checkout); cleanupErr != nil {
+			return errors.New("cannot remove incomplete checkout before clone retry")
+		}
+		if waitErr := waitRetry(ctx, retryDelay(attempt)); waitErr != nil {
+			return contextFailure(ctx)
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -155,6 +184,7 @@ func analyze(ctx context.Context, cfg Config, checkout string) (any, error) {
 			cmd.Env = append(cmd.Env, e)
 		}
 	}
+	setProcessOwner(cmd, ctx)
 	raw, processErr := commandOutput(cmd)
 	var output any
 	decodeErr := json.Unmarshal(raw, &output)

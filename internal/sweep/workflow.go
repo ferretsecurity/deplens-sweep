@@ -15,24 +15,28 @@ func Run(ctx context.Context, cfg Config) (batch Batch, err error) {
 		raw, _ := json.Marshal(redactValue(batch, cfg))
 		json.Unmarshal(raw, &batch)
 	}()
-	batch = Batch{SchemaVersion: 1, ID: newID(), StartedAt: time.Now().UTC(), Selections: cfg.Connections, Repositories: []Outcome{}, DiscoveryComplete: true}
+	batch = Batch{SchemaVersion: 1, ID: newID(), Status: "running", StartedAt: time.Now().UTC(), Selections: cfg.Connections, Repositories: []Outcome{}, DiscoveryComplete: true}
 	version, err := scannerIdentity(cfg.Deplens)
 	if err != nil {
 		return batch, err
 	}
-	if err = os.MkdirAll(cfg.ResultsDir, 0700); err != nil {
-		return batch, errors.New("cannot create results directory")
-	}
-	if cfg.TempDir != "" {
-		if err = os.MkdirAll(cfg.TempDir, 0700); err != nil {
-			return batch, errors.New("cannot create temporary checkout directory")
-		}
-	}
-	work, err := os.MkdirTemp(cfg.TempDir, "deplens-sweep-")
+	lock, canonical, err := lockResults(cfg.ResultsDir)
 	if err != nil {
-		return batch, errors.New("cannot create temporary workspace")
+		return batch, err
 	}
-	defer os.RemoveAll(work)
+	defer lock.Close()
+	cfg.ResultsDir = canonical
+	work, owner, err := prepareWorkspace(cfg, batch.ID)
+	if err != nil {
+		return batch, err
+	}
+	defer removeWorkspace(work)
+	ctx = context.WithValue(ctx, workOwnerKey{}, owner)
+	stage, err := prepareStaging(cfg, owner)
+	if err != nil {
+		return batch, err
+	}
+	defer os.RemoveAll(stage)
 	askpass, err := writeAskpass(work)
 	if err != nil {
 		return batch, errors.New("cannot prepare Git authentication")
@@ -40,6 +44,15 @@ func Run(ctx context.Context, cfg Config) (batch Batch, err error) {
 	if err = saveBatch(cfg, &batch); err != nil {
 		return batch, err
 	}
+	defer func() {
+		if batch.Status == "running" {
+			batch.Status = "incomplete"
+			batch.CompletedAt = time.Now().UTC()
+			if saveErr := saveBatch(cfg, &batch); err == nil {
+				err = saveErr
+			}
+		}
+	}()
 	for _, c := range cfg.Connections {
 		var repos []Repository
 		var failures []Outcome
@@ -62,6 +75,10 @@ func Run(ctx context.Context, cfg Config) (batch Batch, err error) {
 		}
 	}
 	batch.CompletedAt = time.Now().UTC()
+	batch.Status = "complete"
+	if !batch.DiscoveryComplete || batch.Counts["failed"] > 0 {
+		batch.Status = "incomplete"
+	}
 	if err = saveBatch(cfg, &batch); err != nil {
 		return batch, err
 	}
@@ -172,13 +189,8 @@ func processRepository(ctx context.Context, cfg Config, c Connection, repo Repos
 		result.Error = message
 		return result, errors.New(message)
 	}
-	if output != nil {
-		if saveErr := saveJSON(filepath.Join(cfg.ResultsDir, ref, "scan.json"), redactValue(output, cfg)); saveErr != nil {
-			return storageFailure("cannot save scan output")
-		}
-	}
-	if saveErr := saveJSON(filepath.Join(cfg.ResultsDir, ref, "metadata.json"), redactValue(meta, cfg)); saveErr != nil {
-		return storageFailure("cannot save scan metadata")
+	if saveErr := saveAttempt(ctx, cfg, ref, output, meta); saveErr != nil {
+		return storageFailure(saveErr.Error())
 	}
 	result.Result = filepath.ToSlash(ref)
 	if result.Outcome == "complete" {

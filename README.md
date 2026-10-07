@@ -1,5 +1,7 @@
 # deplens-sweep
 
+See [Locking and interruption recovery](docs/recovery.md) for safe restart behavior.
+
 See [Inventory history and reuse](docs/reuse.md) for result references and reuse inputs.
 
 Run one batch of dependency inventory scans with an installed `deplens` CLI. This
@@ -153,3 +155,5 @@ The real-scanner test skips when `SWEEP_REAL_DEPLENS` is unset.
 
 Worker limits and per-repository deadlines are described in
 [execution settings](docs/execution.md).
+
+Temporary API and clone failures use [bounded retries](docs/retries.md).
