@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -37,14 +38,16 @@ type ScanConfig struct {
 	ExcludePresets []string `yaml:"exclude_presets" json:"exclude_presets,omitempty"`
 }
 type Config struct {
-	ResultsDir  string       `yaml:"results_dir"`
-	TempDir     string       `yaml:"temp_dir"`
-	Connections []Connection `yaml:"connections"`
-	Deplens     ScanConfig   `yaml:"deplens"`
+	Workers     int           `yaml:"workers"`
+	Timeout     time.Duration `yaml:"timeout"`
+	ResultsDir  string        `yaml:"results_dir"`
+	TempDir     string        `yaml:"temp_dir"`
+	Connections []Connection  `yaml:"connections"`
+	Deplens     ScanConfig    `yaml:"deplens"`
 }
 
 func LoadConfig(path string) (Config, error) {
-	var cfg Config
+	cfg := Config{Workers: 3, Timeout: 60 * time.Minute}
 	data, err := os.Open(path)
 	if err != nil {
 		return cfg, fmt.Errorf("open configuration: %w", err)
@@ -58,6 +61,12 @@ func LoadConfig(path string) (Config, error) {
 	var extra any
 	if err = dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return cfg, errors.New("configuration must contain one YAML document")
+	}
+	if cfg.Workers <= 0 {
+		return cfg, errors.New("workers must be positive")
+	}
+	if cfg.Timeout <= 0 {
+		return cfg, errors.New("timeout must be a positive duration")
 	}
 	if cfg.ResultsDir == "" {
 		return cfg, errors.New("results_dir is required")

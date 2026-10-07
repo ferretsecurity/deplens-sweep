@@ -6,6 +6,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/ferretsecurity/deplens-sweep/internal/sweep"
 )
@@ -29,7 +31,9 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	batch, err := sweep.Run(context.Background(), cfg)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	batch, err := sweep.Run(ctx, cfg)
 	if batch.ID != "" {
 		json.NewEncoder(os.Stdout).Encode(batch)
 	}

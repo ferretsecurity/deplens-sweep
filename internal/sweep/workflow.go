@@ -57,15 +57,8 @@ func Run(ctx context.Context, cfg Config) (batch Batch, err error) {
 				return batch, err
 			}
 		}
-		for _, repo := range repos {
-			result, processErr := processRepository(ctx, cfg, c, repo, version, work, askpass)
-			batch.Repositories = append(batch.Repositories, result)
-			if err = saveBatch(cfg, &batch); err != nil {
-				return batch, err
-			}
-			if processErr != nil {
-				return batch, processErr
-			}
+		if err = processRepositories(ctx, cfg, c, repos, version, work, askpass, &batch); err != nil {
+			return batch, err
 		}
 	}
 	batch.CompletedAt = time.Now().UTC()
@@ -76,6 +69,58 @@ func Run(ctx context.Context, cfg Config) (batch Batch, err error) {
 		return batch, errors.New("batch is incomplete; see saved repository outcomes")
 	}
 	return batch, nil
+}
+
+// The coordinator owns batch mutation and starts new work only after a completed
+// attempt has persisted its result and removed its checkout.
+func processRepositories(ctx context.Context, cfg Config, c Connection, repos []Repository, version, work, askpass string, batch *Batch) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type completion struct {
+		outcome Outcome
+		err     error
+	}
+	completed := make(chan completion, cfg.Workers)
+	next, active := 0, 0
+	var failure error
+	for next < len(repos) || active > 0 {
+		if ctx.Err() != nil && next < len(repos) {
+			for _, repo := range repos[next:] {
+				batch.Repositories = append(batch.Repositories, Outcome{Repository: repo, CheckedAt: time.Now().UTC(), Outcome: "unprocessed", Error: "batch canceled before attempt started"})
+			}
+			next = len(repos)
+			if failure == nil {
+				failure = errors.New("batch canceled")
+			}
+		}
+		for next < len(repos) && active < cfg.Workers {
+			repo := repos[next]
+			next++
+			active++
+			go func() {
+				outcome, err := processRepository(ctx, cfg, c, repo, version, work, askpass)
+				completed <- completion{outcome, err}
+			}()
+		}
+		if active == 0 {
+			break
+		}
+		result := <-completed
+		active--
+		batch.Repositories = append(batch.Repositories, result.outcome)
+		if result.err != nil && failure == nil {
+			failure = result.err
+			cancel()
+		}
+		if err := saveBatch(cfg, batch); err != nil && failure == nil {
+			failure = err
+			cancel()
+		}
+	}
+	if err := saveBatch(cfg, batch); err != nil && failure == nil {
+		failure = err
+	}
+	return failure
 }
 func processRepository(ctx context.Context, cfg Config, c Connection, repo Repository, version, work, askpass string) (Outcome, error) {
 	started := time.Now().UTC()
@@ -90,8 +135,10 @@ func processRepository(ctx context.Context, cfg Config, c Connection, repo Repos
 	if reused, ok := findReusable(cfg, repo, fingerprint); ok {
 		return reused, nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+	defer cancel()
 	ref := filepath.Join(repositoryDir(repo), "attempts", newID())
-	checkout := filepath.Join(work, "checkout")
+	checkout := filepath.Join(work, "checkout-"+newID())
 	meta := Metadata{Repository: repo, ScannerVersion: version, InputFingerprint: fingerprint, Configuration: cfg.Deplens, Scope: Scope{Shallow: true}, StartedAt: started, Outcome: "failed"}
 	err := acquire(ctx, c, repo, checkout, askpass)
 	var output any
@@ -108,7 +155,7 @@ func processRepository(ctx context.Context, cfg Config, c Connection, repo Repos
 		}
 	}
 	cleanupErr := os.RemoveAll(checkout)
-	if cleanupErr != nil && err == nil {
+	if cleanupErr != nil {
 		err = errors.New("cannot remove temporary checkout")
 	}
 	result.Outcome = "complete"
@@ -138,6 +185,9 @@ func processRepository(ctx context.Context, cfg Config, c Connection, repo Repos
 		if saveErr := saveJSON(filepath.Join(cfg.ResultsDir, repositoryDir(repo), "latest.json"), redactValue(result, cfg)); saveErr != nil {
 			return storageFailure("cannot publish complete result")
 		}
+	}
+	if cleanupErr != nil {
+		return result, errors.New("cannot remove temporary checkout")
 	}
 	return result, nil
 }
