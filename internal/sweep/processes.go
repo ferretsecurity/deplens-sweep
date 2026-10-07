@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
+	"time"
 )
 
 func scannerIdentity(cfg ScanConfig) (string, error) {
@@ -37,10 +39,49 @@ func gitEnv(c Connection, askpass string) []string {
 	env = append(env, "GIT_ASKPASS="+askpass, "GIT_TERMINAL_PROMPT=0", "GIT_LFS_SKIP_SMUDGE=1", "SWEEP_GIT_TOKEN="+c.token, "GIT_CONFIG_COUNT=2", "GIT_CONFIG_KEY_0=credential.helper", "GIT_CONFIG_VALUE_0=", "GIT_CONFIG_KEY_1=core.hooksPath", "GIT_CONFIG_VALUE_1=/dev/null")
 	return env
 }
+
+// Each external command owns a process group, so cancellation also stops its
+// descendants. Clean up the group after Wait in case its leader exited early.
+func processCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return stopProcessGroup(cmd) }
+	cmd.WaitDelay = 100 * time.Millisecond
+	return cmd
+}
+func stopProcessGroup(cmd *exec.Cmd) error {
+	if cmd.Process == nil {
+		return nil
+	}
+	err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	return err
+}
+func commandOutput(cmd *exec.Cmd) ([]byte, error) {
+	output, err := cmd.Output()
+	if cleanupErr := stopProcessGroup(cmd); err == nil {
+		err = cleanupErr
+	}
+	return output, err
+}
+func contextFailure(ctx context.Context) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return errors.New("repository clone-and-scan timeout exceeded")
+	}
+	if ctx.Err() != nil {
+		return errors.New("repository attempt canceled")
+	}
+	return nil
+}
 func gitCommand(ctx context.Context, env []string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := processCommand(ctx, "git", args...)
 	cmd.Env = env
-	out, err := cmd.Output()
+	out, err := commandOutput(cmd)
+	if failure := contextFailure(ctx); failure != nil {
+		return "", failure
+	}
 	if err != nil {
 		return "", errors.New("Git operation failed")
 	}
@@ -103,7 +144,7 @@ func scanArguments(cfg ScanConfig, checkout string) []string {
 	return append(args, checkout)
 }
 func analyze(ctx context.Context, cfg Config, checkout string) (any, error) {
-	cmd := exec.CommandContext(ctx, cfg.Deplens.Executable, scanArguments(cfg.Deplens, checkout)...)
+	cmd := processCommand(ctx, cfg.Deplens.Executable, scanArguments(cfg.Deplens, checkout)...)
 	hidden := map[string]bool{"SWEEP_GIT_TOKEN": true}
 	for _, c := range cfg.Connections {
 		hidden[c.TokenEnv] = true
@@ -114,9 +155,16 @@ func analyze(ctx context.Context, cfg Config, checkout string) (any, error) {
 			cmd.Env = append(cmd.Env, e)
 		}
 	}
-	raw, processErr := cmd.Output()
+	raw, processErr := commandOutput(cmd)
 	var output any
-	if err := json.Unmarshal(raw, &output); err != nil {
+	decodeErr := json.Unmarshal(raw, &output)
+	if decodeErr != nil {
+		output = nil
+	}
+	if failure := contextFailure(ctx); failure != nil {
+		return output, failure
+	}
+	if decodeErr != nil {
 		return nil, errors.New("deplens produced missing or invalid JSON output")
 	}
 	if processErr != nil {
