@@ -332,3 +332,43 @@ func TestDiskReserveAcceptsExplicitZeroAndRejectsNegativeValues(t *testing.T) {
 	}
 	f.assertNoSecretOrCheckout(out)
 }
+
+func TestLowSpaceInOneConnectionDoesNotSkipLaterConnectionDiscovery(t *testing.T) {
+	f := newFixture(t)
+	later := connectionBlock("later", "gitlab", f.server.URL, "SWEEP_TEST_TOKEN", "team/project", "")
+	connectionConfig(f, later)
+	out, err := f.run()
+	if err != nil {
+		t.Fatalf("initial later-connection inventory: %v %s", err, out)
+	}
+	first := f.summary()["repositories"].([]any)[0].(map[string]any)["result"].(string)
+	for i, path := range []string{"team/new", "team/other-new"} {
+		f.projects[path] = map[string]any{"id": 43 + i, "path_with_namespace": path, "default_branch": "main", "http_url_to_repo": strings.Replace(f.server.URL, "http:", "https:", 1) + "/" + path + ".git"}
+	}
+	f.projects["team/empty"] = map[string]any{"id": 45, "path_with_namespace": "team/empty", "empty_repo": true}
+	earlier := connectionBlock("earlier", "gitlab", f.server.URL, "SWEEP_TEST_TOKEN", "team/new", "")
+	later = connectionBlock("later", "gitlab", f.server.URL, "SWEEP_TEST_TOKEN", "team/project, team/empty, team/other-new", "")
+	connectionConfig(f, earlier+later)
+	f.diskReserve(^uint64(0))
+	os.WriteFile(filepath.Join(f.dir, "git.log"), nil, 0600)
+	out, err = f.run()
+	if err == nil {
+		t.Fatalf("unprocessed connections accepted: %s", out)
+	}
+	summary := f.summary()
+	counts := summary["counts"].(map[string]any)
+	if counts["unprocessed"] != float64(2) || counts["reused"] != float64(1) || counts["empty"] != float64(1) || counts["failed"] != float64(0) || summary["discovery_complete"] != true {
+		t.Fatalf("later connection skipped: %#v", summary)
+	}
+	for _, raw := range summary["repositories"].([]any) {
+		row := raw.(map[string]any)
+		if row["outcome"] == "reused" && (row["connection"] != "later" || row["result"] != first) {
+			t.Fatalf("wrong reuse history: %#v", row)
+		}
+	}
+	log, _ := os.ReadFile(filepath.Join(f.dir, "git.log"))
+	if strings.Contains(string(log), "clone\n") {
+		t.Fatalf("clone admitted below reserve: %s", log)
+	}
+	f.assertNoSecretOrCheckout(out)
+}
