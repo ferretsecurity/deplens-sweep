@@ -41,7 +41,13 @@ func Run(ctx context.Context, cfg Config) (batch Batch, err error) {
 		return batch, err
 	}
 	for _, c := range cfg.Connections {
-		repos, failures := discoverGitLab(ctx, c)
+		var repos []Repository
+		var failures []Outcome
+		if c.Provider == "github" {
+			repos, failures = discoverGitHub(ctx, c)
+		} else {
+			repos, failures = discoverGitLab(ctx, c)
+		}
 		if len(failures) > 0 {
 			batch.DiscoveryComplete = false
 		}
