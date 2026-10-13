@@ -3,6 +3,7 @@ package sweep
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -22,7 +23,14 @@ const maxServerDelay = 30 * time.Second
 func apiClient() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DisableKeepAlives = true
-	transport.ForceAttemptHTTP2 = false
+	transport.Protocols = new(http.Protocols)
+	transport.Protocols.SetHTTP1(true)
+	// The clone retains the default transport's h2 ALPN offer. Limit that too,
+	// so servers cannot negotiate a protocol this client no longer handles.
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = new(tls.Config)
+	}
+	transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
 	return &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
