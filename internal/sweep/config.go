@@ -97,8 +97,8 @@ func LoadConfig(path string) (Config, error) {
 			if c.Provider != "gitlab" {
 				return cfg, errors.New("gitlab_group_discovery is supported only for gitlab")
 			}
-			if c.GitLabGroupDiscovery != "walk" && c.GitLabGroupDiscovery != "recursive" {
-				return cfg, errors.New("gitlab_group_discovery must be recursive or walk")
+			if c.GitLabGroupDiscovery != "auto" && c.GitLabGroupDiscovery != "walk" && c.GitLabGroupDiscovery != "recursive" {
+				return cfg, errors.New("gitlab_group_discovery must be auto, recursive, or walk")
 			}
 		}
 		u, e := url.Parse(c.ServerURL)

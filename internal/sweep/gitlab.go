@@ -129,7 +129,7 @@ func gitlabList[T any](ctx context.Context, c Connection, path string, add func(
 	return nil
 }
 
-func discoverGitLab(ctx context.Context, c Connection) ([]Repository, []Outcome) {
+func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(string)) ([]Repository, []Outcome) {
 	var repos []Repository
 	var failures []Outcome
 	excluded := map[string]bool{}
@@ -231,18 +231,26 @@ func discoverGitLab(ctx context.Context, c Connection) ([]Repository, []Outcome)
 			walk(child)
 		}
 	}
+	walking := c.GitLabGroupDiscovery == "walk"
 	for _, group := range c.Include.Groups {
 		if seenGroups[group] || excludedGroup(group) {
 			continue
 		}
-		if c.GitLabGroupDiscovery == "walk" {
+		if walking {
 			walk(group)
 			continue
 		}
-		seenGroups[group] = true
 		if err := gitlabList(ctx, c, "groups/"+url.PathEscape(group)+"/projects?include_subgroups=true&with_shared=false&per_page=100", addProject); err != nil {
+			var status *apiStatusError
+			if c.GitLabGroupDiscovery != "recursive" && ctx.Err() == nil && errors.As(err, &status) && status.consecutive500 {
+				walking = true
+				switchedToWalk(group)
+				walk(group)
+				continue
+			}
 			failure(Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: group}, err)
 		}
+		seenGroups[group] = true
 	}
 	if c.AllAccessible {
 		if err := gitlabList(ctx, c, "projects?per_page=100&order_by=id&sort=asc", addProject); err != nil {

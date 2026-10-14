@@ -252,7 +252,7 @@ func TestGitLabLaterPageAndNestedGroupFailuresKeepKnownWork(t *testing.T) {
 		t.Errorf("unexpected request: %s", r.URL)
 		http.Error(w, "unexpected", 400)
 	})
-	f.writeConfig("  - other/project\n", "      groups: [team, team/missing]\n")
+	f.writeConfig("  - other/project\n", "      groups: [team, team/missing]\n    gitlab_group_discovery: recursive\n")
 	out, err := f.run()
 	if err == nil {
 		t.Fatalf("incomplete discovery accepted: %s", out)

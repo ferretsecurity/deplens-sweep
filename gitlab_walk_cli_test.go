@@ -168,7 +168,7 @@ func TestGitLabDiscoveryModeValidation(t *testing.T) {
 		mode, provider string
 		valid          bool
 	}{
-		{"walk", "gitlab", true}, {"recursive", "gitlab", true}, {"", "gitlab", true}, {"auto", "gitlab", false}, {"invalid", "gitlab", false}, {"walk", "github", false}, {"recursive", "github", false},
+		{"walk", "gitlab", true}, {"recursive", "gitlab", true}, {"", "gitlab", true}, {"auto", "gitlab", true}, {"invalid", "gitlab", false}, {"walk", "github", false}, {"recursive", "github", false}, {"auto", "github", false},
 	} {
 		t.Run(tc.provider+"-"+tc.mode, func(t *testing.T) {
 			f := newFixture(t)
