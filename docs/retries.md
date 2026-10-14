@@ -11,6 +11,11 @@ only when `Retry-After` is present or `X-RateLimit-Remaining` is zero. Ordinary
 403, 401, 404, invalid JSON, and other permanent errors fail without retries.
 Known empty-repository responses retain their separate empty outcome.
 
+GitLab recursive group listing stops after two consecutive HTTP 500 responses
+for the same page. Other transient statuses retain the overall three-attempt
+budget. Explicit subgroup walking uses the ordinary retry policy. Neither
+strategy restarts earlier successful pages after a failed page.
+
 `Retry-After` accepts seconds or an HTTP date. The next request waits at least
 the requested delay and at least the normal retry delay. The maximum accepted
 server delay is 30 seconds. A longer or invalid delay produces a visible failure;

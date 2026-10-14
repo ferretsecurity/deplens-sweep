@@ -20,16 +20,17 @@ type Selection struct {
 	Organizations []string `yaml:"organizations" json:"organizations,omitempty"`
 }
 type Connection struct {
-	Name            string    `yaml:"name" json:"name"`
-	Provider        string    `yaml:"provider" json:"provider"`
-	ServerURL       string    `yaml:"server_url" json:"server_url"`
-	TokenEnv        string    `yaml:"token_env" json:"-"`
-	Include         Selection `yaml:"include" json:"include"`
-	Exclude         Selection `yaml:"exclude" json:"exclude"`
-	AllAccessible   bool      `yaml:"all_accessible" json:"all_accessible"`
-	IncludeArchived bool      `yaml:"include_archived" json:"include_archived"`
-	IncludeForks    bool      `yaml:"include_forks" json:"include_forks"`
-	token           string
+	GitLabGroupDiscovery string    `yaml:"gitlab_group_discovery" json:"-"`
+	Name                 string    `yaml:"name" json:"name"`
+	Provider             string    `yaml:"provider" json:"provider"`
+	ServerURL            string    `yaml:"server_url" json:"server_url"`
+	TokenEnv             string    `yaml:"token_env" json:"-"`
+	Include              Selection `yaml:"include" json:"include"`
+	Exclude              Selection `yaml:"exclude" json:"exclude"`
+	AllAccessible        bool      `yaml:"all_accessible" json:"all_accessible"`
+	IncludeArchived      bool      `yaml:"include_archived" json:"include_archived"`
+	IncludeForks         bool      `yaml:"include_forks" json:"include_forks"`
+	token                string
 }
 type ScanConfig struct {
 	Executable     string   `yaml:"executable" json:"-"`
@@ -91,6 +92,14 @@ func LoadConfig(path string) (Config, error) {
 		names[c.Name] = true
 		if c.Provider != "gitlab" && c.Provider != "github" {
 			return cfg, errors.New("provider must be gitlab or github")
+		}
+		if c.GitLabGroupDiscovery != "" {
+			if c.Provider != "gitlab" {
+				return cfg, errors.New("gitlab_group_discovery is supported only for gitlab")
+			}
+			if c.GitLabGroupDiscovery != "walk" && c.GitLabGroupDiscovery != "recursive" {
+				return cfg, errors.New("gitlab_group_discovery must be recursive or walk")
+			}
 		}
 		u, e := url.Parse(c.ServerURL)
 		if e != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {

@@ -2,7 +2,7 @@
 
 Use `provider: gitlab` with exact project paths, group paths, or an explicit
 `all_accessible: true` opt-in. A group inclusion discovers its projects and every
-nested subgroup through GitLab's recursive project listing. Projects shared from
+nested subgroup. By default, discovery uses GitLab's recursive project listing. Projects shared from
 outside the selected group are excluded from that listing. Discovery follows all
 pages, using GitLab's Link or X-Next-Page headers.
 
@@ -13,6 +13,7 @@ connections:
     provider: gitlab
     server_url: https://gitlab.example.com
     token_env: GITLAB_TOKEN
+    gitlab_group_discovery: recursive
     include:
       repositories:
         - engineering/api
@@ -30,6 +31,21 @@ connections:
 deplens:
   executable: deplens
 ```
+
+Set `gitlab_group_discovery` on each GitLab connection:
+
+- `recursive` lists each selected group with `include_subgroups=true`. Two
+  consecutive HTTP 500 responses on one page stop that listing after one retry.
+- `walk` lists direct projects with `include_subgroups=false` and
+  `with_shared=false`, then lists direct subgroups and visits each one. Both
+  endpoints paginate with `per_page=100`. Traversal is sequential and skips
+  excluded subgroup trees and groups already visited.
+
+Omitted or empty values currently use `recursive`. This is the transitional
+behavior before automatic fallback is added. Other values and nonempty settings
+on GitHub connections are configuration errors. The setting affects group
+inclusions only; exact projects and `all_accessible` keep their existing behavior.
+Walking requests retain the ordinary three-attempt retry budget.
 
 A group path matches its subtree. Excluding `engineering/private` excludes
 `engineering/private/project` and `engineering/private/nested/project`, including
@@ -74,7 +90,10 @@ are rejected. Response bodies from provider errors are not saved.
 Discovery failure, including a failed later page or selected nested group,
 records a failed outcome, marks discovery incomplete, and makes the command exit
 nonzero. Repositories already discovered and independent exact selections still
-get processed. A successful empty listing has no repository outcomes. Neither
+get processed. During walking, a failed direct-project listing still allows
+subgroup discovery. A failed subgroup page retains children from earlier pages,
+and known independent branches still get processed. Failures report the affected
+group and never restart the walk. A successful empty listing has no repository outcomes. Neither
 access errors nor malformed responses count as an empty listing.
 
 A batch describes only its current selected projects and outcomes. Existing
