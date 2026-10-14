@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,7 +60,9 @@ func Run(ctx context.Context, cfg Config) (batch Batch, err error) {
 		if c.Provider == "github" {
 			repos, failures = discoverGitHub(ctx, c)
 		} else {
-			repos, failures = discoverGitLab(ctx, c)
+			repos, failures = discoverGitLab(ctx, c, func(group string) {
+				fmt.Fprintf(os.Stderr, "GitLab connection %q group %q: switching to explicit subgroup walking after repeated HTTP 500\n", redactValue(c.Name, cfg), redactValue(group, cfg))
+			})
 		}
 		if len(failures) > 0 {
 			batch.DiscoveryComplete = false
