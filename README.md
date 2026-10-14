@@ -68,6 +68,10 @@ selection. Connections selecting the same repository run independently, while
 overlapping selections within one connection run once per provider repository
 ID. All connections share the same deplens configuration.
 
+GitLab connections can set `gitlab_group_discovery: walk` to list direct projects
+and visit subgroups explicitly. The current default is `recursive`; see
+[GitLab discovery](docs/gitlab.md) for retry and partial-failure behavior.
+
 Selections use exact paths. GitLab groups include all nested subgroups; excluded
 groups remove their entire subtree. GitHub organizations do not have subgroup
 semantics. Exclusions override every inclusion. Archived repositories and forks
