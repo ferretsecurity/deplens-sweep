@@ -202,7 +202,7 @@ func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(strin
 	seenGroups := map[string]bool{}
 	var walk func(string)
 	walk = func(group string) {
-		if ctx.Err() != nil || seenGroups[group] || excludedGroup(group) {
+		if seenGroups[group] || excludedGroup(group) {
 			return
 		}
 		seenGroups[group] = true
@@ -211,8 +211,16 @@ func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(strin
 				failure(Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: group}, err)
 			}
 		}
-		report(gitlabList(ctx, c, "groups/"+url.PathEscape(group)+"/projects?include_subgroups=false&with_shared=false&per_page=100", addProject))
+		if err := ctx.Err(); err != nil {
+			report(err)
+			return
+		}
+		err := gitlabList(ctx, c, "groups/"+url.PathEscape(group)+"/projects?include_subgroups=false&with_shared=false&per_page=100", addProject)
+		report(err)
 		if ctx.Err() != nil {
+			if err == nil {
+				report(ctx.Err())
+			}
 			return
 		}
 		type subgroup struct {
