@@ -38,14 +38,14 @@ func gitlabGet(ctx context.Context, c Connection, path string, value any) error 
 	return err
 }
 
-func gitlabGetURL(ctx context.Context, c Connection, rawURL string, value any) (http.Header, error) {
+func gitlabGetURL(ctx context.Context, c Connection, rawURL string, value any, recursiveGroup ...bool) (http.Header, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, errors.New("invalid GitLab request")
 	}
 	req.Header.Set("PRIVATE-TOKEN", c.token)
 	client := apiClient()
-	resp, err := apiDo(ctx, client, req, "GitLab")
+	resp, err := apiDo(ctx, client, req, "GitLab", recursiveGroup...)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +102,7 @@ func gitlabNextPage(current string, header http.Header, c Connection) (string, e
 	return nextURL.String(), nil
 }
 
-func gitlabList(ctx context.Context, c Connection, path string, add func(gitlabProject)) error {
+func gitlabList[T any](ctx context.Context, c Connection, path string, add func(T)) error {
 	next := c.ServerURL + "/api/v4/" + path
 	seen := map[string]bool{}
 	for next != "" {
@@ -110,13 +110,13 @@ func gitlabList(ctx context.Context, c Connection, path string, add func(gitlabP
 			return errors.New("GitLab pagination repeated a page")
 		}
 		seen[next] = true
-		var projects []gitlabProject
-		header, err := gitlabGetURL(ctx, c, next, &projects)
+		var projects []T
+		header, err := gitlabGetURL(ctx, c, next, &projects, strings.HasPrefix(path, "groups/") && strings.Contains(path, "include_subgroups=true"))
 		if err != nil {
 			return err
 		}
 		if projects == nil {
-			return errors.New("invalid GitLab project list")
+			return errors.New("invalid GitLab list")
 		}
 		for _, project := range projects {
 			add(project)
@@ -129,7 +129,7 @@ func gitlabList(ctx context.Context, c Connection, path string, add func(gitlabP
 	return nil
 }
 
-func discoverGitLab(ctx context.Context, c Connection) ([]Repository, []Outcome) {
+func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(string)) ([]Repository, []Outcome) {
 	var repos []Repository
 	var failures []Outcome
 	excluded := map[string]bool{}
@@ -200,14 +200,65 @@ func discoverGitLab(ctx context.Context, c Connection) ([]Repository, []Outcome)
 		addProject(p)
 	}
 	seenGroups := map[string]bool{}
+	var walk func(string)
+	walk = func(group string) {
+		if seenGroups[group] || excludedGroup(group) {
+			return
+		}
+		seenGroups[group] = true
+		report := func(err error) {
+			if err != nil {
+				failure(Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: group}, err)
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			report(err)
+			return
+		}
+		err := gitlabList(ctx, c, "groups/"+url.PathEscape(group)+"/projects?include_subgroups=false&with_shared=false&per_page=100", addProject)
+		report(err)
+		if ctx.Err() != nil {
+			if err == nil {
+				report(ctx.Err())
+			}
+			return
+		}
+		type subgroup struct {
+			ID   int64  `json:"id"`
+			Path string `json:"full_path"`
+		}
+		var children []string
+		report(gitlabList(ctx, c, "groups/"+url.PathEscape(group)+"/subgroups?per_page=100", func(child subgroup) {
+			if child.ID <= 0 || child.Path == "" {
+				report(errors.New("invalid GitLab subgroup identity"))
+				return
+			}
+			children = append(children, child.Path)
+		}))
+		for _, child := range children {
+			walk(child)
+		}
+	}
+	walking := c.GitLabGroupDiscovery == "walk"
 	for _, group := range c.Include.Groups {
 		if seenGroups[group] || excludedGroup(group) {
 			continue
 		}
-		seenGroups[group] = true
+		if walking {
+			walk(group)
+			continue
+		}
 		if err := gitlabList(ctx, c, "groups/"+url.PathEscape(group)+"/projects?include_subgroups=true&with_shared=false&per_page=100", addProject); err != nil {
+			var status *apiStatusError
+			if c.GitLabGroupDiscovery != "recursive" && ctx.Err() == nil && errors.As(err, &status) && status.consecutive500 {
+				walking = true
+				switchedToWalk(group)
+				walk(group)
+				continue
+			}
 			failure(Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: group}, err)
 		}
+		seenGroups[group] = true
 	}
 	if c.AllAccessible {
 		if err := gitlabList(ctx, c, "projects?per_page=100&order_by=id&sort=asc", addProject); err != nil {

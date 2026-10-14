@@ -86,9 +86,32 @@ func serverRetryDelay(header string) (time.Duration, error) {
 	return delay, nil
 }
 
+func requestedRetryDelay(ctx context.Context, header, provider string) (time.Duration, error) {
+	delay, err := serverRetryDelay(strings.TrimSpace(header))
+	if err != nil {
+		return 0, fmt.Errorf("%s API: %s", provider, err)
+	}
+	if deadline, ok := ctx.Deadline(); ok && delay > time.Until(deadline) {
+		return 0, fmt.Errorf("%s API retry delay exceeds remaining timeout", provider)
+	}
+	return delay, nil
+}
+
+type apiStatusError struct {
+	provider       string
+	status         int
+	attempts       int
+	consecutive500 bool
+}
+
+func (e *apiStatusError) Error() string {
+	return fmt.Sprintf("%s API retries exhausted after %d attempts (HTTP %d)", e.provider, e.attempts, e.status)
+}
+
 // Retry only this request. In particular, a failed pagination page does not
 // restart discovery or replay pages that have already succeeded.
-func apiDo(ctx context.Context, client *http.Client, req *http.Request, provider string) (*http.Response, error) {
+func apiDo(ctx context.Context, client *http.Client, req *http.Request, provider string, recursiveGroup ...bool) (*http.Response, error) {
+	previous500 := false
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		resp, err := client.Do(req)
 		if err == nil && resp.StatusCode == http.StatusOK {
@@ -110,25 +133,35 @@ func apiDo(ctx context.Context, client *http.Client, req *http.Request, provider
 		if err == nil && !temporaryAPIStatus(resp, provider) {
 			return resp, nil
 		}
+		current500 := err == nil && resp.StatusCode == http.StatusInternalServerError
+		pair500 := len(recursiveGroup) > 0 && recursiveGroup[0] && previous500 && current500
+		previous500 = current500
+		if pair500 {
+			resp.Body.Close()
+			if ctx.Err() != nil {
+				return nil, fmt.Errorf("%s API retry canceled", provider)
+			}
+			if _, err := requestedRetryDelay(ctx, resp.Header.Get("Retry-After"), provider); err != nil {
+				return nil, err
+			}
+			return nil, &apiStatusError{provider: provider, status: resp.StatusCode, attempts: attempt, consecutive500: true}
+		}
 		if attempt == maxAttempts {
 			if resp != nil {
 				resp.Body.Close()
-				return nil, fmt.Errorf("%s API retries exhausted after 3 attempts (HTTP %d)", provider, resp.StatusCode)
+				return nil, &apiStatusError{provider: provider, status: resp.StatusCode, attempts: attempt}
 			}
 			return nil, fmt.Errorf("%s API retries exhausted after 3 attempts (transport failure)", provider)
 		}
 		delay := retryDelay(attempt)
 		if resp != nil {
-			requested, delayErr := serverRetryDelay(strings.TrimSpace(resp.Header.Get("Retry-After")))
+			requested, delayErr := requestedRetryDelay(ctx, resp.Header.Get("Retry-After"), provider)
 			resp.Body.Close()
 			if delayErr != nil {
-				return nil, fmt.Errorf("%s API: %s", provider, delayErr)
+				return nil, delayErr
 			}
 			if requested > delay {
 				delay = requested
-			}
-			if deadline, ok := ctx.Deadline(); ok && requested > time.Until(deadline) {
-				return nil, fmt.Errorf("%s API retry delay exceeds remaining timeout", provider)
 			}
 		}
 		if err := waitRetry(ctx, delay); err != nil {

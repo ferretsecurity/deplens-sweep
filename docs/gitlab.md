@@ -2,8 +2,9 @@
 
 Use `provider: gitlab` with exact project paths, group paths, or an explicit
 `all_accessible: true` opt-in. A group inclusion discovers its projects and every
-nested subgroup through GitLab's recursive project listing. Projects shared from
-outside the selected group are excluded from that listing. Discovery follows all
+nested subgroup. By default, discovery starts with GitLab's recursive project
+listing and switches to explicit subgroup walking after repeated HTTP 500.
+Projects shared from outside the selected group are excluded. Discovery follows all
 pages, using GitLab's Link or X-Next-Page headers.
 
 ```yaml
@@ -13,6 +14,7 @@ connections:
     provider: gitlab
     server_url: https://gitlab.example.com
     token_env: GITLAB_TOKEN
+    gitlab_group_discovery: auto
     include:
       repositories:
         - engineering/api
@@ -30,6 +32,39 @@ connections:
 deplens:
   executable: deplens
 ```
+
+Set `gitlab_group_discovery` on each GitLab connection:
+
+- `auto` is the default. It lists projects with `include_subgroups=true`. An HTTP
+  500 page is retried once; if the retry also returns HTTP 500, discovery walks
+  the selected group and its subgroups explicitly.
+- `recursive` uses the same recursive listing and HTTP 500 retry rule, but reports
+  failure after two consecutive HTTP 500 responses instead of walking.
+- `walk` lists direct projects with `include_subgroups=false` and
+  `with_shared=false`, then lists direct subgroups and visits each one. Both
+  endpoints paginate with `per_page=100`. Traversal is sequential and skips
+  excluded subgroup trees and groups already visited.
+
+Omitted or empty values use `auto`. Other values and nonempty settings on GitHub
+connections are configuration errors. The setting affects group
+inclusions only; exact projects and `all_accessible` keep their existing behavior.
+Walking requests retain the ordinary three-attempt retry budget. Other transient
+errors in recursive listing also keep that budget. Mixed failures only trigger
+fallback if two consecutive responses on the same page are HTTP 500.
+Authentication failures, transport errors, cancellation, and invalid retry delays
+do not independently trigger fallback.
+
+Fallback starts walking from the selected group's root even if earlier recursive
+pages succeeded. Previously discovered projects are retained and processed once.
+The command writes a switch diagnostic to stderr naming the connection and group,
+with credentials redacted and provider error bodies omitted. Remaining selected
+groups in that connection use walking for this batch. Other connections stay
+independent, and the next batch starts with its configured mode. No configuration
+or fallback state is saved.
+
+Successful walking recovers the recursive listing failure, so that failure does
+not make the batch incomplete. Other discovery or repository processing failures
+still make the command exit nonzero.
 
 A group path matches its subtree. Excluding `engineering/private` excludes
 `engineering/private/project` and `engineering/private/nested/project`, including
@@ -71,11 +106,15 @@ The configured server may include an installation base path. Pagination must
 remain on that server's API path, without credentials or fragments, and redirects
 are rejected. Response bodies from provider errors are not saved.
 
-Discovery failure, including a failed later page or selected nested group,
+Unrecovered discovery failure, including a failed later page or selected nested group,
 records a failed outcome, marks discovery incomplete, and makes the command exit
 nonzero. Repositories already discovered and independent exact selections still
-get processed. A successful empty listing has no repository outcomes. Neither
-access errors nor malformed responses count as an empty listing.
+get processed. During walking, a failed direct-project listing still allows
+subgroup discovery. A failed subgroup page retains children from earlier pages,
+and known independent branches still get processed. Failures report the affected
+group and never restart the walk or switch back to recursion. A successful empty
+listing has no repository outcomes. Neither access errors nor malformed responses
+count as an empty listing.
 
 A batch describes only its current selected projects and outcomes. Existing
 histories survive when projects are excluded, deleted, or no longer returned.
