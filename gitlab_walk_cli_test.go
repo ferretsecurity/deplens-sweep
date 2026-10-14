@@ -351,3 +351,57 @@ func TestGitLabRecursiveSecond500RejectsInvalidRetryDelay(t *testing.T) {
 	}
 	f.assertNoSecretOrCheckout(out)
 }
+
+func TestGitLabWalkCancellationBeforeDiscoveryIsIncomplete(t *testing.T) {
+	f := newFixture(t)
+	var calls atomic.Int32
+	gitlabDiscoveryServer(f, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		fmt.Fprint(w, "[]")
+	})
+	f.writeConfig("", "      groups: [team]\n    gitlab_group_discovery: walk\n")
+	// Hold the executable identity read until SIGTERM has canceled the CLI context.
+	if err := os.Remove(f.scanner); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(f.scanner, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(binary, "--config", f.config)
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill() })
+	var writer *os.File
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		var err error
+		writer, err = os.OpenFile(f.scanner, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+		if err == nil {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("CLI did not read scanner executable: %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		writer.Close()
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	writer.Close()
+	if err := cmd.Wait(); err == nil {
+		t.Fatalf("canceled discovery succeeded: %s", output.Bytes())
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("canceled discovery sent %d requests", calls.Load())
+	}
+	s := f.summary()
+	if s["discovery_complete"] != false || s["status"] != "incomplete" || s["counts"].(map[string]any)["failed"] != float64(1) {
+		t.Fatalf("canceled traversal: %#v", s)
+	}
+	f.assertNoSecretOrCheckout(output.Bytes())
+}

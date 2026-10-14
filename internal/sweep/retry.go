@@ -86,6 +86,17 @@ func serverRetryDelay(header string) (time.Duration, error) {
 	return delay, nil
 }
 
+func requestedRetryDelay(ctx context.Context, header, provider string) (time.Duration, error) {
+	delay, err := serverRetryDelay(strings.TrimSpace(header))
+	if err != nil {
+		return 0, fmt.Errorf("%s API: %s", provider, err)
+	}
+	if deadline, ok := ctx.Deadline(); ok && delay > time.Until(deadline) {
+		return 0, fmt.Errorf("%s API retry delay exceeds remaining timeout", provider)
+	}
+	return delay, nil
+}
+
 type apiStatusError struct {
 	provider       string
 	status         int
@@ -130,12 +141,8 @@ func apiDo(ctx context.Context, client *http.Client, req *http.Request, provider
 			if ctx.Err() != nil {
 				return nil, fmt.Errorf("%s API retry canceled", provider)
 			}
-			requested, delayErr := serverRetryDelay(strings.TrimSpace(resp.Header.Get("Retry-After")))
-			if delayErr != nil {
-				return nil, fmt.Errorf("%s API: %s", provider, delayErr)
-			}
-			if deadline, ok := ctx.Deadline(); ok && requested > time.Until(deadline) {
-				return nil, fmt.Errorf("%s API retry delay exceeds remaining timeout", provider)
+			if _, err := requestedRetryDelay(ctx, resp.Header.Get("Retry-After"), provider); err != nil {
+				return nil, err
 			}
 			return nil, &apiStatusError{provider: provider, status: resp.StatusCode, attempts: attempt, consecutive500: true}
 		}
@@ -148,16 +155,13 @@ func apiDo(ctx context.Context, client *http.Client, req *http.Request, provider
 		}
 		delay := retryDelay(attempt)
 		if resp != nil {
-			requested, delayErr := serverRetryDelay(strings.TrimSpace(resp.Header.Get("Retry-After")))
+			requested, delayErr := requestedRetryDelay(ctx, resp.Header.Get("Retry-After"), provider)
 			resp.Body.Close()
 			if delayErr != nil {
-				return nil, fmt.Errorf("%s API: %s", provider, delayErr)
+				return nil, delayErr
 			}
 			if requested > delay {
 				delay = requested
-			}
-			if deadline, ok := ctx.Deadline(); ok && requested > time.Until(deadline) {
-				return nil, fmt.Errorf("%s API retry delay exceeds remaining timeout", provider)
 			}
 		}
 		if err := waitRetry(ctx, delay); err != nil {
