@@ -9,8 +9,11 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+const gitlabRevisionLookups = 8
 
 type Repository struct {
 	Connection    string `json:"connection"`
@@ -145,6 +148,13 @@ func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(strin
 		return false
 	}
 	seenIDs := map[int64]bool{}
+	type candidate struct {
+		repo Repository
+		err  error
+	}
+	var candidates []*candidate
+	var resolving sync.WaitGroup
+	slots := make(chan struct{}, gitlabRevisionLookups)
 	failure := func(repo Repository, err error) {
 		failures = append(failures, Outcome{Repository: repo, Outcome: "failed", Error: err.Error(), CheckedAt: time.Now().UTC()})
 	}
@@ -162,29 +172,33 @@ func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(strin
 		repo.DefaultBranch = p.DefaultBranch
 		repo.Empty = p.Empty
 		repo.CloneURL = p.CloneURL
-		var err error
-		if !repo.Empty {
-			if repo.DefaultBranch == "" {
-				err = errors.New("repository has no default branch and is not confirmed empty")
-			} else {
-				var commit struct {
-					ID string `json:"id"`
-				}
-				err = gitlabGet(ctx, c, "projects/"+repo.ID+"/repository/commits/"+url.PathEscape(repo.DefaultBranch), &commit)
-				if err == nil {
-					if !validRevision(commit.ID) {
-						err = errors.New("invalid default-branch commit")
-					} else {
-						repo.Revision = commit.ID
-					}
-				}
-			}
-		}
-		if err != nil {
-			failure(repo, err)
+		found := &candidate{repo: repo}
+		candidates = append(candidates, found)
+		if repo.Empty {
 			return
 		}
-		repos = append(repos, repo)
+		if repo.DefaultBranch == "" {
+			found.err = errors.New("repository has no default branch and is not confirmed empty")
+			return
+		}
+		// Commit lookups dominate discovery time, so they overlap with the walk.
+		// The slot channel also bounds the request rate against the API.
+		resolving.Add(1)
+		slots <- struct{}{}
+		go func() {
+			defer func() { <-slots; resolving.Done() }()
+			var commit struct {
+				ID string `json:"id"`
+			}
+			found.err = gitlabGet(ctx, c, "projects/"+found.repo.ID+"/repository/commits/"+url.PathEscape(found.repo.DefaultBranch), &commit)
+			if found.err == nil {
+				if !validRevision(commit.ID) {
+					found.err = errors.New("invalid default-branch commit")
+				} else {
+					found.repo.Revision = commit.ID
+				}
+			}
+		}()
 	}
 	seenPaths := map[string]bool{}
 	for _, path := range c.Include.Repositories {
@@ -264,6 +278,14 @@ func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(strin
 		if err := gitlabList(ctx, c, "projects?per_page=100&order_by=id&sort=asc", addProject); err != nil {
 			failure(Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: "all_accessible"}, err)
 		}
+	}
+	resolving.Wait()
+	for _, found := range candidates {
+		if found.err != nil {
+			failure(found.repo, found.err)
+			continue
+		}
+		repos = append(repos, found.repo)
 	}
 	return repos, failures
 }
