@@ -42,8 +42,13 @@ Set `gitlab_group_discovery` on each GitLab connection:
   failure after two consecutive HTTP 500 responses instead of walking.
 - `walk` lists direct projects with `include_subgroups=false` and
   `with_shared=false`, then lists direct subgroups and visits each one. Both
-  endpoints paginate with `per_page=100`. Traversal is sequential and skips
-  excluded subgroup trees and groups already visited.
+  endpoints paginate with `per_page=100`. Up to 8 groups are listed at a time.
+  Discovered repositories keep depth-first order: a group's own projects, then
+  each subgroup in listing order. Traversal skips excluded subgroup trees and
+  groups already visited.
+
+Discovery resolves each project's default-branch commit with up to 8 concurrent
+requests, while listing continues.
 
 Omitted or empty values use `auto`. Other values and nonempty settings on GitHub
 connections are configuration errors. The setting affects group

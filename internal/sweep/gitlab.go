@@ -7,13 +7,17 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-const gitlabRevisionLookups = 8
+const (
+	gitlabRevisionLookups = 8
+	gitlabGroupWalkers    = 8
+)
 
 type Repository struct {
 	Connection    string `json:"connection"`
@@ -147,24 +151,36 @@ func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(strin
 		}
 		return false
 	}
+	// Discovery runs commit lookups and subgroup walks concurrently. Each project and
+	// failure carries an order key, so results keep the sequential discovery order:
+	// a group's own projects first, then each subgroup in listing order.
+	var mu sync.Mutex
 	seenIDs := map[int64]bool{}
+	seenGroups := map[string]bool{}
 	type candidate struct {
-		repo Repository
-		err  error
+		order []int
+		repo  Repository
+		err   error
+		at    time.Time
 	}
 	var candidates []*candidate
-	var resolving sync.WaitGroup
+	var resolving, walking sync.WaitGroup
 	slots := make(chan struct{}, gitlabRevisionLookups)
-	failure := func(repo Repository, err error) {
-		failures = append(failures, Outcome{Repository: repo, Outcome: "failed", Error: err.Error(), CheckedAt: time.Now().UTC()})
+	walkers := make(chan struct{}, gitlabGroupWalkers)
+	failure := func(order []int, repo Repository, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		candidates = append(candidates, &candidate{order: order, repo: repo, err: err, at: time.Now().UTC()})
 	}
-	addProject := func(p gitlabProject) {
+	addProject := func(order []int, p gitlabProject) {
 		repo := Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: p.Path}
 		if p.ID <= 0 || p.Path == "" {
-			failure(repo, errors.New("invalid GitLab repository identity"))
+			failure(order, repo, errors.New("invalid GitLab repository identity"))
 			return
 		}
+		mu.Lock()
 		if seenIDs[p.ID] || excluded[p.Path] || excludedGroup(p.Path) || (p.Archived && !c.IncludeArchived) || (p.Fork != nil && !c.IncludeForks) {
+			mu.Unlock()
 			return
 		}
 		seenIDs[p.ID] = true
@@ -172,13 +188,14 @@ func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(strin
 		repo.DefaultBranch = p.DefaultBranch
 		repo.Empty = p.Empty
 		repo.CloneURL = p.CloneURL
-		found := &candidate{repo: repo}
+		found := &candidate{order: order, repo: repo}
 		candidates = append(candidates, found)
+		mu.Unlock()
 		if repo.Empty {
 			return
 		}
 		if repo.DefaultBranch == "" {
-			found.err = errors.New("repository has no default branch and is not confirmed empty")
+			found.err, found.at = errors.New("repository has no default branch and is not confirmed empty"), time.Now().UTC()
 			return
 		}
 		// Commit lookups dominate discovery time, so they overlap with the walk.
@@ -198,91 +215,124 @@ func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(strin
 					found.repo.Revision = commit.ID
 				}
 			}
+			found.at = time.Now().UTC()
 		}()
 	}
+	// listed numbers projects from one list in page order under a parent key.
+	listed := func(parent []int) func(gitlabProject) {
+		next := 0
+		return func(p gitlabProject) {
+			addProject(append(slices.Clip(parent), 0, next), p)
+			next++
+		}
+	}
+	top := 0
+	nextTop := func() []int { top++; return []int{top} }
 	seenPaths := map[string]bool{}
 	for _, path := range c.Include.Repositories {
 		if seenPaths[path] || excluded[path] || excludedGroup(path) {
 			continue
 		}
 		seenPaths[path] = true
+		order := nextTop()
 		var p gitlabProject
 		if err := gitlabGet(ctx, c, "projects/"+url.PathEscape(path), &p); err != nil {
-			failure(Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: path}, err)
+			failure(order, Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: path}, err)
 			continue
 		}
-		addProject(p)
+		addProject(order, p)
 	}
-	seenGroups := map[string]bool{}
-	var walk func(string)
-	walk = func(group string) {
+	// walk lists one group while holding a walker slot, then releases it before
+	// starting its subgroups, so nested groups cannot exhaust the slots.
+	var walk func(string, []int)
+	walk = func(group string, order []int) {
+		mu.Lock()
 		if seenGroups[group] || excludedGroup(group) {
+			mu.Unlock()
 			return
 		}
 		seenGroups[group] = true
-		report := func(err error) {
-			if err != nil {
-				failure(Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: group}, err)
+		mu.Unlock()
+		walking.Add(1)
+		go func() {
+			defer walking.Done()
+			report := func(err error) {
+				if err != nil {
+					failure(order, Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: group}, err)
+				}
 			}
-		}
-		if err := ctx.Err(); err != nil {
-			report(err)
-			return
-		}
-		err := gitlabList(ctx, c, "groups/"+url.PathEscape(group)+"/projects?include_subgroups=false&with_shared=false&per_page=100", addProject)
-		report(err)
-		if ctx.Err() != nil {
-			if err == nil {
-				report(ctx.Err())
-			}
-			return
-		}
-		type subgroup struct {
-			ID   int64  `json:"id"`
-			Path string `json:"full_path"`
-		}
-		var children []string
-		report(gitlabList(ctx, c, "groups/"+url.PathEscape(group)+"/subgroups?per_page=100", func(child subgroup) {
-			if child.ID <= 0 || child.Path == "" {
-				report(errors.New("invalid GitLab subgroup identity"))
+			walkers <- struct{}{}
+			children, ok := func() ([]string, bool) {
+				defer func() { <-walkers }()
+				if err := ctx.Err(); err != nil {
+					report(err)
+					return nil, false
+				}
+				err := gitlabList(ctx, c, "groups/"+url.PathEscape(group)+"/projects?include_subgroups=false&with_shared=false&per_page=100", listed(order))
+				report(err)
+				if ctx.Err() != nil {
+					if err == nil {
+						report(ctx.Err())
+					}
+					return nil, false
+				}
+				type subgroup struct {
+					ID   int64  `json:"id"`
+					Path string `json:"full_path"`
+				}
+				var children []string
+				report(gitlabList(ctx, c, "groups/"+url.PathEscape(group)+"/subgroups?per_page=100", func(child subgroup) {
+					if child.ID <= 0 || child.Path == "" {
+						report(errors.New("invalid GitLab subgroup identity"))
+						return
+					}
+					children = append(children, child.Path)
+				}))
+				return children, true
+			}()
+			if !ok {
 				return
 			}
-			children = append(children, child.Path)
-		}))
-		for _, child := range children {
-			walk(child)
-		}
+			for i, child := range children {
+				walk(child, append(slices.Clip(order), 1+i))
+			}
+		}()
 	}
-	walking := c.GitLabGroupDiscovery == "walk"
+	walkingMode := c.GitLabGroupDiscovery == "walk"
 	for _, group := range c.Include.Groups {
 		if seenGroups[group] || excludedGroup(group) {
 			continue
 		}
-		if walking {
-			walk(group)
+		order := nextTop()
+		if walkingMode {
+			walk(group, order)
+			walking.Wait()
 			continue
 		}
-		if err := gitlabList(ctx, c, "groups/"+url.PathEscape(group)+"/projects?include_subgroups=true&with_shared=false&per_page=100", addProject); err != nil {
+		if err := gitlabList(ctx, c, "groups/"+url.PathEscape(group)+"/projects?include_subgroups=true&with_shared=false&per_page=100", listed(order)); err != nil {
 			var status *apiStatusError
 			if c.GitLabGroupDiscovery != "recursive" && ctx.Err() == nil && errors.As(err, &status) && status.consecutive500 {
-				walking = true
+				walkingMode = true
 				switchedToWalk(group)
-				walk(group)
+				walk(group, order)
+				walking.Wait()
 				continue
 			}
-			failure(Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: group}, err)
+			failure(order, Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: group}, err)
 		}
 		seenGroups[group] = true
 	}
 	if c.AllAccessible {
-		if err := gitlabList(ctx, c, "projects?per_page=100&order_by=id&sort=asc", addProject); err != nil {
-			failure(Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: "all_accessible"}, err)
+		order := nextTop()
+		if err := gitlabList(ctx, c, "projects?per_page=100&order_by=id&sort=asc", listed(order)); err != nil {
+			failure(order, Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: "all_accessible"}, err)
 		}
 	}
 	resolving.Wait()
+	slices.SortStableFunc(candidates, func(a, b *candidate) int { return slices.Compare(a.order, b.order) })
 	for _, found := range candidates {
 		if found.err != nil {
-			failure(found.repo, found.err)
+			failures = append(failures, Outcome{Repository: found.repo, Outcome: "failed", Error: found.err.Error(), CheckedAt: found.at})
 			continue
 		}
 		repos = append(repos, found.repo)
