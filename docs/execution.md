@@ -16,10 +16,11 @@ works with one connection and exact repository selections. Each active attempt
 has its own temporary checkout. A worker saves its repository outcome and
 removes that checkout before taking another repository. The coordinator writes
 batch summaries as outcomes arrive, so concurrent scans do not write the same
-summary at once. It rewrites the summary at most every 10 seconds during the
-batch and always before the command exits. Attempts and latest references are
-saved as each repository finishes, so a forced kill loses at most the last
-10 seconds of summary entries, not results.
+summary at once. During the batch it rewrites the summary when an outcome
+arrives at least 10 seconds after the previous save, and it always saves before
+the command exits. Attempts and latest references are saved as each repository
+finishes, so a forced kill can lose summary entries recorded since the last
+save, not results.
 
 The timeout is one total budget for Git acquisition, checkout verification, and
 deplens analysis together. Discovery happens before this budget starts. A slow

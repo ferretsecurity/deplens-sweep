@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"slices"
@@ -226,6 +227,8 @@ func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(strin
 			next++
 		}
 	}
+	// afterListed orders a listing failure after failures already found in that listing.
+	afterListed := func(order []int) []int { return append(slices.Clip(order), 0, math.MaxInt) }
 	top := 0
 	nextTop := func() []int { top++; return []int{top} }
 	seenPaths := map[string]bool{}
@@ -256,9 +259,10 @@ func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(strin
 		walking.Add(1)
 		go func() {
 			defer walking.Done()
+			groupFailure := afterListed(order)
 			report := func(err error) {
 				if err != nil {
-					failure(order, Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: group}, err)
+					failure(groupFailure, Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: group}, err)
 				}
 			}
 			walkers <- struct{}{}
@@ -309,23 +313,24 @@ func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(strin
 			walking.Wait()
 			continue
 		}
-		if err := gitlabList(ctx, c, "groups/"+url.PathEscape(group)+"/projects?include_subgroups=true&with_shared=false&per_page=100", listed(order)); err != nil {
+		// A fallback walk follows the projects already listed recursively.
+		if err := gitlabList(ctx, c, "groups/"+url.PathEscape(group)+"/projects?include_subgroups=true&with_shared=false&per_page=100", listed(append(slices.Clip(order), 0))); err != nil {
 			var status *apiStatusError
 			if c.GitLabGroupDiscovery != "recursive" && ctx.Err() == nil && errors.As(err, &status) && status.consecutive500 {
 				walkingMode = true
 				switchedToWalk(group)
-				walk(group, order)
+				walk(group, append(slices.Clip(order), 1))
 				walking.Wait()
 				continue
 			}
-			failure(order, Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: group}, err)
+			failure(afterListed(order), Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: group}, err)
 		}
 		seenGroups[group] = true
 	}
 	if c.AllAccessible {
 		order := nextTop()
 		if err := gitlabList(ctx, c, "projects?per_page=100&order_by=id&sort=asc", listed(order)); err != nil {
-			failure(order, Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: "all_accessible"}, err)
+			failure(afterListed(order), Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: "all_accessible"}, err)
 		}
 	}
 	resolving.Wait()

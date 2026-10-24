@@ -108,8 +108,8 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos []
 	var pendingFingerprint string
 	// Rewriting the whole summary costs time proportional to its size, so saving it
 	// after every outcome makes a large sweep quadratic. Attempts and latest
-	// references are saved immediately; the summary trails by at most one interval
-	// and is always saved before returning.
+	// references are saved immediately; the summary is saved when an outcome
+	// arrives at least one interval after the last save, and always before returning.
 	var saved time.Time
 	persist := func() {
 		if time.Since(saved) < batchSaveInterval {
