@@ -91,6 +91,8 @@ func Run(ctx context.Context, cfg Config) (batch Batch, err error) {
 	return batch, nil
 }
 
+const batchSaveInterval = 10 * time.Second
+
 // The coordinator owns batch mutation and starts new work only after a completed
 // attempt has persisted its result and removed its checkout.
 func processRepositories(ctx context.Context, cfg Config, c Connection, repos []Repository, version, work, askpass string, batch *Batch) error {
@@ -104,12 +106,24 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos []
 	next, active := 0, 0
 	var failure error
 	var pendingFingerprint string
-	record := func(result Outcome) {
-		batch.Repositories = append(batch.Repositories, result)
+	// Rewriting the whole summary costs time proportional to its size, so saving it
+	// after every outcome makes a large sweep quadratic. Attempts and latest
+	// references are saved immediately; the summary trails by at most one interval
+	// and is always saved before returning.
+	var saved time.Time
+	persist := func() {
+		if time.Since(saved) < batchSaveInterval {
+			return
+		}
+		saved = time.Now()
 		if err := saveBatch(cfg, batch); err != nil && failure == nil {
 			failure = err
 			cancel()
 		}
+	}
+	record := func(result Outcome) {
+		batch.Repositories = append(batch.Repositories, result)
+		persist()
 	}
 	for next < len(repos) || active > 0 {
 		if ctx.Err() != nil && next < len(repos) {
@@ -178,10 +192,7 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos []
 			failure = result.err
 			cancel()
 		}
-		if err := saveBatch(cfg, batch); err != nil && failure == nil {
-			failure = err
-			cancel()
-		}
+		persist()
 	}
 	if err := saveBatch(cfg, batch); err != nil && failure == nil {
 		failure = err
