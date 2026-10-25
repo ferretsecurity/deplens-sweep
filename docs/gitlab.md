@@ -37,7 +37,8 @@ Set `gitlab_group_discovery` on each GitLab connection:
 
 - `auto` is the default. It lists projects with `include_subgroups=true`. An HTTP
   500 page is retried once; if the retry also returns HTTP 500, discovery walks
-  the selected group and its subgroups explicitly.
+  that group's direct projects and subgroups explicitly. Each child group tries
+  recursive listing again, so healthy subtrees need no subgroup traversal.
 - `recursive` uses the same recursive listing and HTTP 500 retry rule, but reports
   failure after two consecutive HTTP 500 responses instead of walking.
 - `walk` lists direct projects with `include_subgroups=false` and
@@ -59,16 +60,17 @@ fallback if two consecutive responses on the same page are HTTP 500.
 Authentication failures, transport errors, cancellation, and invalid retry delays
 do not independently trigger fallback.
 
-Fallback starts walking from the selected group's root even if earlier recursive
+Fallback starts walking from the failing group even if earlier recursive
 pages succeeded. Previously discovered projects are retained and processed once.
 The command writes a switch diagnostic to stderr naming the connection and group,
-with credentials redacted and provider error bodies omitted. Remaining selected
-groups in that connection use walking for this batch. Other connections stay
-independent, and the next batch starts with its configured mode. No configuration
-or fallback state is saved.
+with credentials redacted and provider error bodies omitted. Fallback applies only
+to the group whose recursive listing failed. Each child and each remaining selected
+group tries recursive listing independently. A successful recursive listing,
+including an empty one, finishes that subtree without listing its subgroups.
+No configuration or fallback state is saved.
 
-Successful walking recovers the recursive listing failure, so that failure does
-not make the batch incomplete. Other discovery or repository processing failures
+Successful fallback discovery recovers the recursive listing failure, so that
+failure does not make the batch incomplete. Other discovery or repository processing failures
 still make the command exit nonzero.
 
 A group path matches its subtree. Excluding `engineering/private` excludes
@@ -117,7 +119,8 @@ nonzero. Repositories already discovered and independent exact selections still
 get processed. During walking, a failed direct-project listing still allows
 subgroup discovery. A failed subgroup page retains children from earlier pages,
 and known independent branches still get processed. Failures report the affected
-group and never restart the walk or switch back to recursion. A successful empty
+group and never restart its listing. In `auto`, child groups still make their own
+recursive attempts; `walk` always uses direct listings. A successful empty
 listing has no repository outcomes. Neither access errors nor malformed responses
 count as an empty listing.
 
@@ -130,3 +133,23 @@ scan configuration, result persistence, reuse, and cleanup described in the
 API behavior follows GitLab's [Groups API](https://docs.gitlab.com/api/groups/),
 [Projects API](https://docs.gitlab.com/api/projects/), and
 [REST pagination documentation](https://docs.gitlab.com/api/rest/).
+
+## Live discovery test
+
+With `GITLAB_TOKEN` set, run discovery on a public GitLab.com group without
+cloning every repository:
+
+```sh
+SWEEP_LIVE_GITLAB_GROUP=gitlab-com \
+  go test ./internal/sweep -run '^TestLiveGitLabDiscovery$' -v -count=1 -timeout=35m
+```
+
+This opt-in test resolves default-branch commits and compares repository IDs
+against a separate recursive listing. It uses the default archive and fork
+exclusions. Set `SWEEP_LIVE_GITLAB_REPORT` to a file path to save the repositories,
+failures, request counts, and discovery duration as JSON.
+
+The test starts requests 750 ms apart to stay below the observed free-plan limit
+of 100 requests per minute. This pacing applies only to the test. The CLI keeps
+its normal concurrency and retry policy. The regular test suite skips the live
+test unless `SWEEP_LIVE_GITLAB_GROUP` is set.

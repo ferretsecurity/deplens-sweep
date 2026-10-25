@@ -245,8 +245,10 @@ func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(strin
 		}
 		addProject(order, p)
 	}
-	// walk lists one group while holding a walker slot, then releases it before
-	// starting its subgroups, so nested groups cannot exhaust the slots.
+	// Each group first tries recursive listing unless walk mode was requested.
+	// A fallback lists only this group's direct projects and children; children
+	// make their own recursive attempt. Release the slot before starting children
+	// so nested groups cannot exhaust the slots.
 	var walk func(string, []int)
 	walk = func(group string, order []int) {
 		mu.Lock()
@@ -271,6 +273,21 @@ func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(strin
 				if err := ctx.Err(); err != nil {
 					report(err)
 					return nil, false
+				}
+				if c.GitLabGroupDiscovery != "walk" {
+					err := gitlabList(ctx, c, "groups/"+url.PathEscape(group)+"/projects?include_subgroups=true&with_shared=false&per_page=100", listed(append(slices.Clip(order), 0)))
+					if err == nil {
+						return nil, false
+					}
+					var status *apiStatusError
+					if c.GitLabGroupDiscovery == "recursive" || ctx.Err() != nil || !errors.As(err, &status) || !status.consecutive500 {
+						report(err)
+						return nil, false
+					}
+					switchedToWalk(group)
+					// Keep successful recursive pages before fallback results.
+					order = append(slices.Clip(order), 1)
+					groupFailure = afterListed(order)
 				}
 				err := gitlabList(ctx, c, "groups/"+url.PathEscape(group)+"/projects?include_subgroups=false&with_shared=false&per_page=100", listed(order))
 				report(err)
@@ -302,30 +319,9 @@ func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(strin
 			}
 		}()
 	}
-	walkingMode := c.GitLabGroupDiscovery == "walk"
 	for _, group := range c.Include.Groups {
-		if seenGroups[group] || excludedGroup(group) {
-			continue
-		}
-		order := nextTop()
-		if walkingMode {
-			walk(group, order)
-			walking.Wait()
-			continue
-		}
-		// A fallback walk follows the projects already listed recursively.
-		if err := gitlabList(ctx, c, "groups/"+url.PathEscape(group)+"/projects?include_subgroups=true&with_shared=false&per_page=100", listed(append(slices.Clip(order), 0))); err != nil {
-			var status *apiStatusError
-			if c.GitLabGroupDiscovery != "recursive" && ctx.Err() == nil && errors.As(err, &status) && status.consecutive500 {
-				walkingMode = true
-				switchedToWalk(group)
-				walk(group, append(slices.Clip(order), 1))
-				walking.Wait()
-				continue
-			}
-			failure(afterListed(order), Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: group}, err)
-		}
-		seenGroups[group] = true
+		walk(group, nextTop())
+		walking.Wait()
 	}
 	if c.AllAccessible {
 		order := nextTop()

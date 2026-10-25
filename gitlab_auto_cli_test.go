@@ -23,7 +23,7 @@ func TestGitLabAutoRecoversRepeated500(t *testing.T) {
 				f.projects["team/sub/nested"] = gitlabProjectFixture(f, 43, "team/sub/nested")
 				failedCalls, walks := 0, 0
 				gitlabDiscoveryServer(f, func(w http.ResponseWriter, r *http.Request) {
-					if r.URL.Query().Get("include_subgroups") == "true" {
+					if r.URL.Path == "/api/v4/groups/team/projects" && r.URL.Query().Get("include_subgroups") == "true" {
 						if laterPage && r.URL.Query().Get("page") == "" {
 							w.Header().Set("X-Next-Page", "2")
 							json.NewEncoder(w).Encode([]any{f.projects["team/project"]})
@@ -54,7 +54,7 @@ func TestGitLabAutoRecoversRepeated500(t *testing.T) {
 				}
 				f.writeConfig("  - team/project\n", extra)
 				out, err := f.run()
-				if err != nil || failedCalls != 2 || walks != 4 {
+				if err != nil || failedCalls != 2 || walks != 3 {
 					t.Fatalf("recursive=%d walk=%d err=%v %s", failedCalls, walks, err, out)
 				}
 				s := f.summary()
@@ -70,7 +70,7 @@ func TestGitLabAutoRecoversRepeated500(t *testing.T) {
 	}
 }
 
-func TestGitLabAutoFallbackIsLocalToConnectionAndBatch(t *testing.T) {
+func TestGitLabAutoFallbackIsLocalToGroup(t *testing.T) {
 	f := newFixture(t)
 	calls := map[string]int{}
 	gitlabDiscoveryServer(f, func(w http.ResponseWriter, r *http.Request) {
@@ -98,9 +98,9 @@ func TestGitLabAutoFallbackIsLocalToConnectionAndBatch(t *testing.T) {
 		for query, want := range map[string]int{
 			"/api/v4/groups/team/projects?include_subgroups=true&with_shared=false&per_page=100":   2 * batch,
 			"/api/v4/groups/team/projects?include_subgroups=false&with_shared=false&per_page=100":  batch,
-			"/api/v4/groups/other/projects?include_subgroups=false&with_shared=false&per_page=100": batch,
-			"/api/v4/groups/other/projects?include_subgroups=true&with_shared=false&per_page=100":  batch,
-			"/api/v4/groups/other/subgroups?per_page=100":                                          batch,
+			"/api/v4/groups/other/projects?include_subgroups=false&with_shared=false&per_page=100": 0,
+			"/api/v4/groups/other/projects?include_subgroups=true&with_shared=false&per_page=100":  2 * batch,
+			"/api/v4/groups/other/subgroups?per_page=100":                                          0,
 		} {
 			if calls[query] != want {
 				t.Errorf("batch %d %s: %d want %d", batch, query, calls[query], want)
@@ -111,6 +111,130 @@ func TestGitLabAutoFallbackIsLocalToConnectionAndBatch(t *testing.T) {
 		}
 		f.assertNoSecretOrCheckout(out)
 	}
+}
+
+func TestGitLabAutoNestedFallbackKeepsHealthySubtreesRecursive(t *testing.T) {
+	f := newFixture(t)
+	for i, path := range []string{"team/broken/one", "team/broken/deep/two", "team/healthy/three", "team/healthy/nested/four", "team/secret/hidden", "team/archived", "team/fork"} {
+		f.projects[path] = gitlabProjectFixture(f, 50+i, path)
+	}
+	f.projects["team/archived"]["archived"] = true
+	f.projects["team/fork"]["forked_from_project"] = map[string]any{"id": 100}
+	calls := map[string]int{}
+	gitlabDiscoveryServer(f, func(w http.ResponseWriter, r *http.Request) {
+		calls[r.URL.RequestURI()]++
+		recursive := r.URL.Query().Get("include_subgroups") == "true"
+		if strings.HasSuffix(r.URL.Path, "/projects") && (r.URL.Query().Get("with_shared") != "false" || r.URL.Query().Get("per_page") != "100") {
+			t.Errorf("incorrect project query: %s", r.URL)
+		}
+		switch r.URL.Path {
+		case "/api/v4/groups/team/projects":
+			if recursive {
+				http.Error(w, "test-secret", 500)
+				return
+			}
+			json.NewEncoder(w).Encode([]any{f.projects["team/project"]})
+		case "/api/v4/groups/team/subgroups":
+			fmt.Fprint(w, `[{"id":2,"full_path":"team/broken"},{"id":3,"full_path":"team/healthy"},{"id":4,"full_path":"team/empty"},{"id":5,"full_path":"team/secret"}]`)
+		case "/api/v4/groups/team/broken/projects":
+			if recursive {
+				if r.URL.Query().Get("page") == "2" {
+					http.Error(w, "test-secret", 500)
+					return
+				}
+				w.Header().Set("X-Next-Page", "2")
+			}
+			json.NewEncoder(w).Encode([]any{f.projects["team/broken/one"]})
+		case "/api/v4/groups/team/broken/subgroups":
+			fmt.Fprint(w, `[{"id":6,"full_path":"team/broken/deep"}]`)
+		case "/api/v4/groups/team/broken/deep/projects":
+			if !recursive {
+				t.Error("healthy grandchild must use recursive listing")
+			}
+			json.NewEncoder(w).Encode([]any{f.projects["team/broken/deep/two"]})
+		case "/api/v4/groups/team/healthy/projects":
+			if !recursive {
+				t.Error("healthy sibling must use recursive listing")
+			}
+			if r.URL.Query().Get("page") == "2" {
+				json.NewEncoder(w).Encode([]any{f.projects["team/healthy/nested/four"]})
+				return
+			}
+			w.Header().Set("X-Next-Page", "2")
+			json.NewEncoder(w).Encode([]any{f.projects["team/healthy/three"], f.projects["team/secret/hidden"], f.projects["team/archived"], f.projects["team/fork"]})
+		case "/api/v4/groups/team/empty/projects":
+			if !recursive {
+				t.Error("empty group must use recursive listing")
+			}
+			fmt.Fprint(w, "[]")
+		default:
+			t.Errorf("unnecessary traversal: %s", r.URL)
+			http.Error(w, "unexpected", 400)
+		}
+	})
+	f.writeConfig("", "      groups: [team, team/broken, team/healthy, team]\n    exclude:\n      groups: [team/secret]\n")
+	out, err := f.run()
+	if err != nil {
+		t.Fatalf("nested fallback: %v %s", err, out)
+	}
+	for query, count := range calls {
+		want := 1
+		if query == "/api/v4/groups/team/projects?include_subgroups=true&with_shared=false&per_page=100" || query == "/api/v4/groups/team%2Fbroken/projects?include_subgroups=true&page=2&per_page=100&with_shared=false" {
+			want = 2
+		}
+		if count != want {
+			t.Errorf("%s: got %d requests, want %d", query, count, want)
+		}
+	}
+	s := f.summary()
+	if s["discovery_complete"] != true || s["counts"].(map[string]any)["complete"] != float64(5) || len(s["repositories"].([]any)) != 5 {
+		t.Fatalf("summary: %#v", s)
+	}
+	if strings.Count(string(out), "switching to explicit subgroup walking") != 2 {
+		t.Fatalf("expected root and nested fallback diagnostics: %s", out)
+	}
+	f.assertNoSecretOrCheckout(out)
+}
+
+func TestGitLabAutoChildFailureDoesNotWalkOrStopSibling(t *testing.T) {
+	f := newFixture(t)
+	f.projects["team/healthy/project"] = gitlabProjectFixture(f, 43, "team/healthy/project")
+	gitlabDiscoveryServer(f, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v4/groups/team/projects":
+			if r.URL.Query().Get("include_subgroups") == "true" {
+				http.Error(w, "test-secret", 500)
+				return
+			}
+			fmt.Fprint(w, "[]")
+		case "/api/v4/groups/team/subgroups":
+			fmt.Fprint(w, `[{"id":2,"full_path":"team/bad"},{"id":3,"full_path":"team/healthy"}]`)
+		case "/api/v4/groups/team/bad/projects":
+			if r.URL.Query().Get("include_subgroups") != "true" {
+				t.Error("permission failure must not trigger walking")
+			}
+			http.Error(w, "test-secret", 403)
+		case "/api/v4/groups/team/healthy/projects":
+			if r.URL.Query().Get("include_subgroups") != "true" {
+				t.Error("healthy sibling must use recursive listing")
+			}
+			json.NewEncoder(w).Encode([]any{f.projects["team/healthy/project"]})
+		default:
+			t.Errorf("unexpected traversal: %s", r.URL)
+			http.Error(w, "unexpected", 400)
+		}
+	})
+	f.writeConfig("", "      groups: [team]\n")
+	out, err := f.run()
+	s := f.summary()
+	counts := s["counts"].(map[string]any)
+	if err == nil || s["discovery_complete"] != false || counts["failed"] != float64(1) || counts["complete"] != float64(1) {
+		t.Fatalf("err=%v summary=%#v", err, s)
+	}
+	if strings.Count(string(out), "switching to explicit subgroup walking") != 1 {
+		t.Fatalf("expected only root fallback: %s", out)
+	}
+	f.assertNoSecretOrCheckout(out)
 }
 
 func TestGitLabAutoPreservesUnrecoveredFailures(t *testing.T) {
@@ -125,6 +249,10 @@ func TestGitLabAutoPreservesUnrecoveredFailures(t *testing.T) {
 			gitlabDiscoveryServer(f, func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Query().Get("include_subgroups") == "true" {
 					recursive++
+					if r.URL.Path == "/api/v4/groups/team/sub/projects" {
+						json.NewEncoder(w).Encode([]any{f.projects["team/sub/nested"]})
+						return
+					}
 					if r.URL.Query().Get("page") == "" {
 						w.Header().Set("X-Next-Page", "2")
 						json.NewEncoder(w).Encode([]any{f.projects["team/project"]})
@@ -193,7 +321,7 @@ func TestGitLabAutoPreservesUnrecoveredFailures(t *testing.T) {
 			}
 			s := f.summary()
 			counts := s["counts"].(map[string]any)
-			if s["discovery_complete"] != (failure == "acquisition") || counts["failed"] != float64(1) || counts["complete"] != wantComplete || recursive != 3 || direct != wantDirect {
+			if s["discovery_complete"] != (failure == "acquisition") || counts["failed"] != float64(1) || counts["complete"] != wantComplete || recursive != 4 || direct != wantDirect {
 				t.Fatalf("recursive=%d direct=%d summary=%#v", recursive, direct, s)
 			}
 			f.assertNoSecretOrCheckout(out)

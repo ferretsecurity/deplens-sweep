@@ -14,8 +14,9 @@ Known empty-repository responses retain their separate empty outcome.
 GitLab recursive group listing stops after two consecutive HTTP 500 responses
 for the same page. Other transient statuses retain the overall three-attempt
 budget. In the default `auto` mode, that consecutive pair switches discovery to
-walking from the selected group's root, retaining already discovered projects.
-The switch applies to remaining groups in that connection for this batch only.
+listing that group's direct projects and subgroups, retaining already discovered
+projects. Each child group and each remaining selected group tries recursive
+listing again; the fallback applies only to the group that failed.
 `recursive` reports failure without switching. Explicit subgroup walking uses the
 ordinary retry policy and never restarts the whole walk after a failed page.
 

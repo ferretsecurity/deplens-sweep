@@ -70,8 +70,9 @@ ID. All connections share the same deplens configuration.
 
 GitLab connections can set `gitlab_group_discovery: walk` to list direct projects
 and visit subgroups explicitly. The default, `auto`, retries an HTTP 500 page
-once, then switches to walking if the retry also returns HTTP 500. Use
-`recursive` to disable fallback. See
+once, then lists that group's direct projects and subgroups if the retry also
+returns HTTP 500. Each subgroup tries recursive listing again. Use `recursive`
+to disable fallback. See
 [GitLab discovery](docs/gitlab.md) for retry and partial-failure behavior.
 
 Selections use exact paths. GitLab groups include all nested subgroups; excluded
