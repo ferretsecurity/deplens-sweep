@@ -76,11 +76,16 @@ func TestLiveGitLabDiscovery(t *testing.T) {
 	}()
 	var mu sync.Mutex
 	var fallbacks []string
-	repos, failures := discoverGitLab(ctx, c, func(group string) {
+	var repos []Repository
+	failures := discoverGitLab(ctx, c, func(group string) {
 		mu.Lock()
 		defer mu.Unlock()
 		fallbacks = append(fallbacks, group)
 		t.Logf("fallback group=%s", group)
+	}, func(repo Repository) {
+		mu.Lock()
+		defer mu.Unlock()
+		repos = append(repos, repo)
 	})
 	close(done)
 	progress.Wait()

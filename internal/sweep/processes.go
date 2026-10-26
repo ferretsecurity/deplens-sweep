@@ -9,20 +9,59 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
+
+// Hashing the scanner reads the whole executable, and every repository verifies
+// it several times. Reuse the last hash while the file keeps the same device,
+// inode, size, mtime and ctime: any write or replacement changes ctime or inode.
+type scannerFile struct {
+	path         string
+	dev, ino     uint64
+	size         int64
+	mtime, ctime syscall.Timespec
+}
+
+var scannerCache struct {
+	sync.Mutex
+	file    scannerFile
+	version string
+}
 
 func scannerIdentity(cfg ScanConfig) (string, error) {
 	path, err := exec.LookPath(cfg.Executable)
 	if err != nil {
 		return "", errors.New("deplens executable is unavailable")
 	}
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return "", errors.New("cannot read deplens executable")
+	}
+	defer f.Close()
+	stat := func() (scannerFile, error) {
+		var st syscall.Stat_t
+		if err := syscall.Fstat(int(f.Fd()), &st); err != nil {
+			return scannerFile{}, errors.New("cannot read deplens executable")
+		}
+		return scannerFile{path, uint64(st.Dev), uint64(st.Ino), st.Size, st.Mtim, st.Ctim}, nil
+	}
+	before, err := stat()
+	if err != nil {
+		return "", err
+	}
+	scannerCache.Lock()
+	defer scannerCache.Unlock()
+	if scannerCache.version != "" && scannerCache.file == before {
+		return scannerCache.version, nil
+	}
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return "", errors.New("cannot read deplens executable")
 	}
@@ -30,6 +69,10 @@ func scannerIdentity(cfg ScanConfig) (string, error) {
 	version := "sha256:" + hex.EncodeToString(sum[:])
 	if info, err := buildinfo.Read(bytes.NewReader(data)); err == nil && info.Main.Version != "" {
 		version = info.Main.Version + " " + version
+	}
+	// Cache only a hash of bytes that did not change while they were read.
+	if after, err := stat(); err == nil && after == before {
+		scannerCache.file, scannerCache.version = before, version
 	}
 	return version, nil
 }

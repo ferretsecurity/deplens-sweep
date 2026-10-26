@@ -44,12 +44,15 @@ Set `gitlab_group_discovery` on each GitLab connection:
 - `walk` lists direct projects with `include_subgroups=false` and
   `with_shared=false`, then lists direct subgroups and visits each one. Both
   endpoints paginate with `per_page=100`. Up to 8 groups are listed at a time.
-  Discovered repositories keep depth-first order: a group's own projects, then
-  each subgroup in listing order. Traversal skips excluded subgroup trees and
+  Groups are visited depth-first: a group's own projects, then each subgroup
+  in listing order. Traversal skips excluded subgroup trees and
   groups already visited.
 
 Discovery resolves each project's default-branch commit with up to 8 concurrent
-requests, while listing continues.
+requests, while listing continues. Each repository is queued for an attempt
+as soon as its commit is resolved, or at once when it is confirmed empty, so attempts start while discovery continues
+and follow resolution order. Discovery failures keep depth-first discovery
+order in every mode.
 
 Omitted or empty values use `auto`. Other values and nonempty settings on GitHub
 connections are configuration errors. The setting affects group

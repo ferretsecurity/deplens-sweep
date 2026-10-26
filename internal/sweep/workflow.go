@@ -55,25 +55,37 @@ func Run(ctx context.Context, cfg Config) (batch Batch, err error) {
 		}
 	}()
 	for _, c := range cfg.Connections {
-		var repos []Repository
+		// Discovery feeds the workers while it runs, so the first clones do not wait
+		// for the whole walk. The coordinator drains repos until discovery closes it.
+		repos := make(chan Repository, 256)
 		var failures []Outcome
-		if c.Provider == "github" {
-			repos, failures = discoverGitHub(ctx, c)
-		} else {
-			repos, failures = discoverGitLab(ctx, c, func(group string) {
+		// Summaries saved while discovery runs must not claim a complete discovery.
+		discovered := batch.DiscoveryComplete
+		batch.DiscoveryComplete = false
+		go func() {
+			defer close(repos)
+			if c.Provider == "github" {
+				var found []Repository
+				found, failures = discoverGitHub(ctx, c)
+				for _, repo := range found {
+					repos <- repo
+				}
+				return
+			}
+			failures = discoverGitLab(ctx, c, func(group string) {
 				fmt.Fprintf(os.Stderr, "GitLab connection %q group %q: switching to explicit subgroup walking after repeated HTTP 500\n", redactValue(c.Name, cfg), redactValue(group, cfg))
-			})
-		}
+			}, func(repo Repository) { repos <- repo })
+		}()
+		processErr := processRepositories(ctx, cfg, c, repos, version, work, askpass, &batch)
+		// processRepositories returns only after repos is closed, so failures is final.
+		batch.DiscoveryComplete = discovered && len(failures) == 0
 		if len(failures) > 0 {
-			batch.DiscoveryComplete = false
-		}
-		for _, failure := range failures {
-			batch.Repositories = append(batch.Repositories, failure)
+			batch.Repositories = append(batch.Repositories, failures...)
 			if err = saveBatch(cfg, &batch); err != nil {
 				return batch, err
 			}
 		}
-		if err = processRepositories(ctx, cfg, c, repos, version, work, askpass, &batch); err != nil {
+		if err = processErr; err != nil {
 			return batch, err
 		}
 	}
@@ -94,16 +106,18 @@ func Run(ctx context.Context, cfg Config) (batch Batch, err error) {
 const batchSaveInterval = 10 * time.Second
 
 // The coordinator owns batch mutation and starts new work only after a completed
-// attempt has persisted its result and removed its checkout.
-func processRepositories(ctx context.Context, cfg Config, c Connection, repos []Repository, version, work, askpass string, batch *Batch) error {
+// attempt has persisted its result and removed its checkout. It always receives
+// from repos until the channel is closed, so discovery never blocks on workers.
+func processRepositories(ctx context.Context, cfg Config, c Connection, repos <-chan Repository, version, work, askpass string, batch *Batch) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	type completion struct {
 		outcome Outcome
 		err     error
 	}
-	completed := make(chan completion, min(cfg.Workers, len(repos)))
-	next, active := 0, 0
+	completed := make(chan completion, cfg.Workers)
+	var queue []Repository
+	open, active := true, 0
 	var failure error
 	var pendingFingerprint string
 	// Rewriting the whole summary costs time proportional to its size, so saving it
@@ -125,32 +139,33 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos []
 		batch.Repositories = append(batch.Repositories, result)
 		persist()
 	}
-	for next < len(repos) || active > 0 {
-		if ctx.Err() != nil && next < len(repos) {
-			for _, repo := range repos[next:] {
+	for open || len(queue) > 0 || active > 0 {
+		if ctx.Err() != nil && len(queue) > 0 {
+			for _, repo := range queue {
 				batch.Repositories = append(batch.Repositories, Outcome{Repository: repo, CheckedAt: time.Now().UTC(), Outcome: "unprocessed", Error: "batch canceled before attempt started"})
 			}
-			next = len(repos)
+			queue = queue[:0]
+			pendingFingerprint = ""
 			if failure == nil {
 				failure = errors.New("batch canceled")
 			}
 		}
-		for next < len(repos) && active < cfg.Workers && ctx.Err() == nil {
-			repo := repos[next]
+		for len(queue) > 0 && active < cfg.Workers && ctx.Err() == nil {
+			repo := queue[0]
 			if repo.Empty {
-				next++
+				queue = queue[1:]
 				record(Outcome{Repository: repo, CheckedAt: time.Now().UTC(), Outcome: "empty"})
 				continue
 			}
 			if pendingFingerprint == "" {
 				fingerprint, reused, ok, reuseErr := prepareRepository(cfg, repo, version)
 				if reuseErr != nil {
-					next++
+					queue = queue[1:]
 					record(Outcome{Repository: repo, CheckedAt: time.Now().UTC(), Outcome: "failed", Error: reuseErr.Error()})
 					continue
 				}
 				if ok {
-					next++
+					queue = queue[1:]
 					record(reused)
 					continue
 				}
@@ -165,12 +180,12 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos []
 				if spaceErr != nil {
 					message = spaceErr.Error()
 				}
-				next++
+				queue = queue[1:]
 				pendingFingerprint = ""
 				record(Outcome{Repository: repo, CheckedAt: time.Now().UTC(), Outcome: "unprocessed", Error: message})
 				continue
 			}
-			next++
+			queue = queue[1:]
 			active++
 			fingerprint := pendingFingerprint
 			pendingFingerprint = ""
@@ -179,20 +194,29 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos []
 				completed <- completion{outcome, err}
 			}()
 		}
-		if active == 0 {
-			if next < len(repos) {
+		if !open && active == 0 {
+			continue
+		}
+		incoming := repos
+		if !open {
+			incoming = nil
+		}
+		select {
+		case repo, ok := <-incoming:
+			if !ok {
+				open = false
 				continue
 			}
-			break
+			queue = append(queue, repo)
+		case result := <-completed:
+			active--
+			batch.Repositories = append(batch.Repositories, result.outcome)
+			if result.err != nil && failure == nil {
+				failure = result.err
+				cancel()
+			}
+			persist()
 		}
-		result := <-completed
-		active--
-		batch.Repositories = append(batch.Repositories, result.outcome)
-		if result.err != nil && failure == nil {
-			failure = result.err
-			cancel()
-		}
-		persist()
 	}
 	if err := saveBatch(cfg, batch); err != nil && failure == nil {
 		failure = err

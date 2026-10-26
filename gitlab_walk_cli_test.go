@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -404,4 +405,55 @@ func TestGitLabWalkCancellationBeforeDiscoveryIsIncomplete(t *testing.T) {
 		t.Fatalf("canceled traversal: %#v", s)
 	}
 	f.assertNoSecretOrCheckout(output.Bytes())
+}
+
+func TestGitLabAttemptsStartWhileDiscoveryContinues(t *testing.T) {
+	f := newFixture(t)
+	f.projects["team/sub/late"] = gitlabProjectFixture(f, 51, "team/sub/late")
+	markers := filepath.Join(f.dir, "markers")
+	if err := os.MkdirAll(markers, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SWEEP_MARKERS", markers)
+	if err := os.WriteFile(f.scanner, []byte(`#!/bin/sh
+touch "$SWEEP_MARKERS/scan-$$"
+printf '%s\n' '{"schema_version":1,"root":"fixture","sources":[],"check_runs":[],"findings":[]}'
+`), 0700); err != nil {
+		t.Fatal(err)
+	}
+	var scannedDuringDiscovery atomic.Bool
+	gitlabDiscoveryServer(f, func(w http.ResponseWriter, r *http.Request) {
+		items := []any{}
+		switch r.URL.Path {
+		case "/api/v4/groups/team/projects":
+			items = append(items, f.projects["team/project"])
+		case "/api/v4/groups/team/subgroups":
+			items = append(items, map[string]any{"id": 2, "full_path": "team/sub"})
+		case "/api/v4/groups/team/sub/projects":
+			// Hold the rest of discovery until the first attempt reaches analysis.
+			for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+				if found, _ := filepath.Glob(filepath.Join(markers, "scan-*")); len(found) > 0 {
+					scannedDuringDiscovery.Store(true)
+					break
+				}
+			}
+			items = append(items, f.projects["team/sub/late"])
+		case "/api/v4/groups/team/sub/subgroups":
+		default:
+			t.Errorf("unexpected traversal: %s", r.URL)
+		}
+		json.NewEncoder(w).Encode(items)
+	})
+	f.writeConfig("", "      groups: [team]\n    gitlab_group_discovery: walk\n")
+	out, err := f.run()
+	if err != nil {
+		t.Fatalf("walk: %v %s", err, out)
+	}
+	if !scannedDuringDiscovery.Load() {
+		t.Fatal("first attempt waited for discovery to finish")
+	}
+	s := f.summary()
+	if s["discovery_complete"] != true || s["counts"].(map[string]any)["complete"] != float64(2) {
+		t.Fatalf("summary: %#v", s)
+	}
 }

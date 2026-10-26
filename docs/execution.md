@@ -22,8 +22,15 @@ the command exits. Attempts and latest references are saved as each repository
 finishes, so a forced kill can lose summary entries recorded since the last
 save, not results.
 
+For GitLab connections, attempts start while discovery of the same connection
+continues; GitHub discovery finishes before its attempts start. Discovery
+failures are added to the summary after that connection's attempts finish.
+Until then, saved summaries report `discovery_complete: false`, so a forced kill
+during that window leaves a summary that does not claim complete discovery.
+
 The timeout is one total budget for Git acquisition, checkout verification, and
-deplens analysis together. Discovery happens before this budget starts. A slow
+deplens analysis together. Discovery of a repository happens before its budget starts; other
+repositories can still be discovered while it runs. A slow
 clone uses time that the scanner would otherwise have. On timeout, the command
 kills the affected process group, including its child processes, saves a failed
 outcome, removes the checkout, and continues other selected repositories. Any

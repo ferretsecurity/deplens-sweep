@@ -137,8 +137,10 @@ func gitlabList[T any](ctx context.Context, c Connection, path string, add func(
 	return nil
 }
 
-func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(string)) ([]Repository, []Outcome) {
-	var repos []Repository
+// discoverGitLab sends each ready repository to emit as soon as it is resolved,
+// so scans can start while the walk continues. emit may run on any discovery
+// goroutine. Failures are returned at the end in sequential discovery order.
+func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(string), emit func(Repository)) []Outcome {
 	var failures []Outcome
 	excluded := map[string]bool{}
 	for _, p := range c.Exclude.Repositories {
@@ -152,26 +154,26 @@ func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(strin
 		}
 		return false
 	}
-	// Discovery runs commit lookups and subgroup walks concurrently. Each project and
-	// failure carries an order key, so results keep the sequential discovery order:
+	// Discovery runs commit lookups and subgroup walks concurrently. Each failure
+	// carries an order key, so failures keep the sequential discovery order:
 	// a group's own projects first, then each subgroup in listing order.
 	var mu sync.Mutex
 	seenIDs := map[int64]bool{}
 	seenGroups := map[string]bool{}
-	type candidate struct {
+	type discoveryFailure struct {
 		order []int
 		repo  Repository
 		err   error
 		at    time.Time
 	}
-	var candidates []*candidate
+	var failed []*discoveryFailure
 	var resolving, walking sync.WaitGroup
 	slots := make(chan struct{}, gitlabRevisionLookups)
 	walkers := make(chan struct{}, gitlabGroupWalkers)
 	failure := func(order []int, repo Repository, err error) {
 		mu.Lock()
 		defer mu.Unlock()
-		candidates = append(candidates, &candidate{order: order, repo: repo, err: err, at: time.Now().UTC()})
+		failed = append(failed, &discoveryFailure{order: order, repo: repo, err: err, at: time.Now().UTC()})
 	}
 	addProject := func(order []int, p gitlabProject) {
 		repo := Repository{Connection: c.Name, Provider: c.Provider, ServerURL: c.ServerURL, Path: p.Path}
@@ -185,18 +187,17 @@ func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(strin
 			return
 		}
 		seenIDs[p.ID] = true
+		mu.Unlock()
 		repo.ID = strconv.FormatInt(p.ID, 10)
 		repo.DefaultBranch = p.DefaultBranch
 		repo.Empty = p.Empty
 		repo.CloneURL = p.CloneURL
-		found := &candidate{order: order, repo: repo}
-		candidates = append(candidates, found)
-		mu.Unlock()
 		if repo.Empty {
+			emit(repo)
 			return
 		}
 		if repo.DefaultBranch == "" {
-			found.err, found.at = errors.New("repository has no default branch and is not confirmed empty"), time.Now().UTC()
+			failure(order, repo, errors.New("repository has no default branch and is not confirmed empty"))
 			return
 		}
 		// Commit lookups dominate discovery time, so they overlap with the walk.
@@ -208,15 +209,16 @@ func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(strin
 			var commit struct {
 				ID string `json:"id"`
 			}
-			found.err = gitlabGet(ctx, c, "projects/"+found.repo.ID+"/repository/commits/"+url.PathEscape(found.repo.DefaultBranch), &commit)
-			if found.err == nil {
-				if !validRevision(commit.ID) {
-					found.err = errors.New("invalid default-branch commit")
-				} else {
-					found.repo.Revision = commit.ID
-				}
+			err := gitlabGet(ctx, c, "projects/"+repo.ID+"/repository/commits/"+url.PathEscape(repo.DefaultBranch), &commit)
+			if err == nil && !validRevision(commit.ID) {
+				err = errors.New("invalid default-branch commit")
 			}
-			found.at = time.Now().UTC()
+			if err != nil {
+				failure(order, repo, err)
+				return
+			}
+			repo.Revision = commit.ID
+			emit(repo)
 		}()
 	}
 	// listed numbers projects from one list in page order under a parent key.
@@ -330,15 +332,11 @@ func discoverGitLab(ctx context.Context, c Connection, switchedToWalk func(strin
 		}
 	}
 	resolving.Wait()
-	slices.SortStableFunc(candidates, func(a, b *candidate) int { return slices.Compare(a.order, b.order) })
-	for _, found := range candidates {
-		if found.err != nil {
-			failures = append(failures, Outcome{Repository: found.repo, Outcome: "failed", Error: found.err.Error(), CheckedAt: found.at})
-			continue
-		}
-		repos = append(repos, found.repo)
+	slices.SortStableFunc(failed, func(a, b *discoveryFailure) int { return slices.Compare(a.order, b.order) })
+	for _, found := range failed {
+		failures = append(failures, Outcome{Repository: found.repo, Outcome: "failed", Error: found.err.Error(), CheckedAt: found.at})
 	}
-	return repos, failures
+	return failures
 }
 
 func validateCloneURL(c Connection, raw string) error {
