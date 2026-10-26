@@ -1,0 +1,33 @@
+# Four public repositories for a first batch run.
+# Put GITHUB_TOKEN and GITLAB_TOKEN in .env, then run ./run-test.sh.
+# Paths below are relative to this configuration file.
+results_dir: ./test-run/results
+temp_dir: ./test-run/checkouts
+workers: 1
+timeout: 5m
+min_free_bytes: 1073741824 # Keep at least 1 GiB free before starting a clone.
+
+connections:
+  - name: github-test
+    provider: github
+    server_url: https://github.com
+    token_env: GITHUB_TOKEN
+    include:
+      repositories:
+        - go-chi/chi
+        - go-chi/render
+
+  - name: gitlab-test
+    provider: gitlab
+    server_url: https://gitlab.com
+    token_env: GITLAB_TOKEN
+    include:
+      repositories:
+        - gitlab-org/cli
+        - gitlab-org/api/client-go
+
+deplens:
+  executable: ./test-run/bin/deplens
+  # Keep the usual ignores and skip testdata fixtures, which can contain invalid
+  # dependency files such as gitlab-org/cli's duplicate-key CI YAML example.
+  ignore: [.git, node_modules, .venv, venv, vendor, .tox, .mypy_cache, .pytest_cache, testdata]
