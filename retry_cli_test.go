@@ -184,6 +184,9 @@ func TestRetryAfterSecondsAndDateDelayTheNextRequest(t *testing.T) {
 }
 
 func TestGitLabWalkRetainsChildRepositoriesAfterSixtySecondRetryAfter(t *testing.T) {
+	if os.Getenv("SWEEP_LONG_RETRY_TEST") != "1" {
+		t.Skip("set SWEEP_LONG_RETRY_TEST=1 to exercise the 60-second server delay")
+	}
 	f := newFixture(t)
 	f.projects["team/sub/child"] = gitlabProjectFixture(f, 43, "team/sub/child")
 	gitlabDiscoveryServer(f, func(w http.ResponseWriter, r *http.Request) {

@@ -22,7 +22,7 @@ ordinary retry policy and never restarts the whole walk after a failed page.
 
 `Retry-After` accepts seconds or an HTTP date. The next request waits at least
 the requested delay and at least the normal retry delay. The maximum accepted
-server delay is 30 seconds. A longer or invalid delay produces a visible failure;
+server delay is 120 seconds. A longer or invalid delay produces a visible failure;
 the command does not retry before that server delay. Requests have a 30-second
 HTTP timeout. Fresh HTTP/1 connections prevent hidden transport replays from
 exceeding the three-attempt limit. A successful API response body is limited to
@@ -46,3 +46,11 @@ API or clone retries produce failed outcomes and a nonzero batch exit status.
 
 Deplens analysis runs once per attempt. An analysis failure can run again in a
 later batch, rather than repeatedly scanning inside this retry loop.
+
+The CLI regression for a 60-second GitLab rate limit is opt-in because it waits
+the full server delay. It verifies subgroup discovery and revision resolution,
+including collection of a child repository. Run it with:
+
+```sh
+SWEEP_LONG_RETRY_TEST=1 go test . -run '^TestGitLabWalkRetainsChildRepositoriesAfterSixtySecondRetryAfter$' -count=1
+```

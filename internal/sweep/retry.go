@@ -16,7 +16,7 @@ import (
 )
 
 const maxAttempts = 3
-const maxServerDelay = 30 * time.Second
+const maxServerDelay = 120 * time.Second
 
 // Fresh HTTP/1 connections prevent the transport from replaying a GET on a
 // reused connection outside the explicit three-attempt budget.
@@ -68,7 +68,7 @@ func serverRetryDelay(header string) (time.Duration, error) {
 	}
 	if seconds, err := strconv.ParseInt(header, 10, 64); err == nil {
 		if seconds < 0 || seconds > int64(maxServerDelay/time.Second) {
-			return 0, errors.New("server retry delay exceeds 30-second limit")
+			return 0, fmt.Errorf("server retry delay exceeds %d-second limit", maxServerDelay/time.Second)
 		}
 		return time.Duration(seconds) * time.Second, nil
 	}
@@ -81,7 +81,7 @@ func serverRetryDelay(header string) (time.Duration, error) {
 		delay = 0
 	}
 	if delay > maxServerDelay {
-		return 0, errors.New("server retry delay exceeds 30-second limit")
+		return 0, fmt.Errorf("server retry delay exceeds %d-second limit", maxServerDelay/time.Second)
 	}
 	return delay, nil
 }
