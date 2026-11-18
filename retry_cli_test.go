@@ -183,12 +183,79 @@ func TestRetryAfterSecondsAndDateDelayTheNextRequest(t *testing.T) {
 	}
 }
 
+func TestGitLabWalkRetainsChildRepositoriesAfterSixtySecondRetryAfter(t *testing.T) {
+	if os.Getenv("SWEEP_LONG_RETRY_TEST") != "1" {
+		t.Skip("set SWEEP_LONG_RETRY_TEST=1 to exercise the 60-second server delay")
+	}
+	f := newFixture(t)
+	f.projects["team/sub/child"] = gitlabProjectFixture(f, 43, "team/sub/child")
+	gitlabDiscoveryServer(f, func(w http.ResponseWriter, r *http.Request) {
+		items := []any{}
+		switch r.URL.Path {
+		case "/api/v4/groups/team/projects":
+			items = append(items, f.projects["team/project"])
+		case "/api/v4/groups/team/subgroups":
+			items = append(items, map[string]any{"id": 2, "full_path": "team/sub"})
+		case "/api/v4/groups/team/sub/projects":
+			items = append(items, f.projects["team/sub/child"])
+		case "/api/v4/groups/team/sub/subgroups":
+		default:
+			t.Errorf("unexpected traversal: %s", r.URL)
+		}
+		json.NewEncoder(w).Encode(items)
+	})
+	original := f.getHandler()
+	calls := map[string]int{}
+	limitedAt := map[string]time.Time{}
+	for _, path := range []string{"/api/v4/groups/team/subgroups", "/api/v4/projects/42/repository/commits/main"} {
+		calls[path] = 0
+	}
+	f.setHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, limited := calls[r.URL.Path]; limited {
+			calls[r.URL.Path]++
+			if calls[r.URL.Path] == 1 {
+				limitedAt[r.URL.Path] = time.Now()
+				w.Header().Set("Retry-After", "60")
+				http.Error(w, "test-secret limited", http.StatusTooManyRequests)
+				return
+			}
+			if time.Since(limitedAt[r.URL.Path]) < 60*time.Second-20*time.Millisecond {
+				t.Errorf("%s retried before the 60-second server delay elapsed", r.URL.Path)
+			}
+		}
+		original.ServeHTTP(w, r)
+	}))
+	f.writeConfig("", "      groups: [team]\n    gitlab_group_discovery: walk\n")
+	out, err := f.run()
+	if err != nil {
+		t.Fatalf("60-second retry failed: %v %s", err, out)
+	}
+	for path, count := range calls {
+		if count != 2 {
+			t.Errorf("%s requests=%d, want 2", path, count)
+		}
+	}
+	summary := f.summary()
+	counts := summary["counts"].(map[string]any)
+	if summary["discovery_complete"] != true || counts["complete"] != float64(2) || counts["failed"] != float64(0) {
+		t.Fatalf("repositories lost after rate limit: %#v", summary)
+	}
+	paths := map[string]bool{}
+	for _, result := range summary["repositories"].([]any) {
+		paths[result.(map[string]any)["path"].(string)] = true
+	}
+	if !paths["team/project"] || !paths["team/sub/child"] {
+		t.Fatalf("root or child repository missing: %#v", summary)
+	}
+	f.assertNoSecretOrCheckout(out)
+}
+
 func TestExcessiveServerRetryDelayFailsWithoutRetryingEarly(t *testing.T) {
 	f := newFixture(t)
 	var requests atomic.Int32
 	f.setHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		w.Header().Set("Retry-After", "31")
+		w.Header().Set("Retry-After", "121")
 		http.Error(w, "test-secret limited", 429)
 	}))
 	started := time.Now()
@@ -199,7 +266,7 @@ func TestExcessiveServerRetryDelayFailsWithoutRetryingEarly(t *testing.T) {
 	if requests.Load() != 1 || time.Since(started) > 2*time.Second {
 		t.Fatalf("excessive delay retried or waited: requests=%d elapsed=%s", requests.Load(), time.Since(started))
 	}
-	if !strings.Contains(string(out), "30-second limit") {
+	if !strings.Contains(string(out), "120-second limit") {
 		t.Fatalf("unclear bounded delay failure: %s", out)
 	}
 	f.assertNoSecretOrCheckout(out)
