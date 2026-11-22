@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -137,8 +138,18 @@ func LoadConfig(path string) (Config, error) {
 			}
 		}
 		c.token = os.Getenv(c.TokenEnv)
-		if c.TokenEnv == "" || c.token == "" {
-			return cfg, errors.New("connection token environment variable is missing or empty")
+		if c.token == "" && cfg.Review && c.ServerURL == "https://github.com" && c.TokenEnv == "GITHUB_TOKEN" {
+			raw, err := exec.Command("gh", "auth", "token", "--hostname", "github.com").Output()
+			c.token = strings.TrimSpace(string(raw))
+			if err != nil || c.token == "" {
+				return cfg, fmt.Errorf("connection %q: set GITHUB_TOKEN or sign in with gh auth login --hostname github.com", c.Name)
+			}
+		}
+		if c.TokenEnv == "" {
+			return cfg, fmt.Errorf("connection %q requires token_env", c.Name)
+		}
+		if c.token == "" {
+			return cfg, fmt.Errorf("connection %q requires environment variable %s", c.Name, c.TokenEnv)
 		}
 	}
 	base, e := filepath.Abs(filepath.Dir(path))
