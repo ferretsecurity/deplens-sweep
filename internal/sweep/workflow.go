@@ -66,7 +66,7 @@ func Run(ctx context.Context, cfg Config) (batch Batch, err error) {
 			defer close(repos)
 			if c.Provider == "github" {
 				var found []Repository
-				found, failures = discoverGitHub(ctx, c)
+				found, failures = discoverGitHub(ctx, c, cfg.Review)
 				for _, repo := range found {
 					repos <- repo
 				}
@@ -91,13 +91,13 @@ func Run(ctx context.Context, cfg Config) (batch Batch, err error) {
 	}
 	batch.CompletedAt = time.Now().UTC()
 	batch.Status = "complete"
-	if !batch.DiscoveryComplete || batch.Counts["failed"] > 0 || batch.Counts["unprocessed"] > 0 {
+	if !batch.DiscoveryComplete || batch.Counts["failed"] > 0 || batch.Counts["unprocessed"] > 0 || batch.ReviewCounts["failed"] > 0 {
 		batch.Status = "incomplete"
 	}
 	if err = saveBatch(cfg, &batch); err != nil {
 		return batch, err
 	}
-	if !batch.DiscoveryComplete || batch.Counts["failed"] > 0 || batch.Counts["unprocessed"] > 0 {
+	if batch.Status == "incomplete" {
 		return batch, errors.New("batch is incomplete; see saved repository outcomes")
 	}
 	return batch, nil
@@ -120,6 +120,7 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos <-
 	open, active := true, 0
 	var failure error
 	var pendingFingerprint string
+	var pendingReuse *Outcome
 	// Rewriting the whole summary costs time proportional to its size, so saving it
 	// after every outcome makes a large sweep quadratic. Attempts and latest
 	// references are saved immediately; the summary is saved when an outcome
@@ -141,11 +142,17 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos <-
 	}
 	for open || len(queue) > 0 || active > 0 {
 		if ctx.Err() != nil && len(queue) > 0 {
-			for _, repo := range queue {
+			for i, repo := range queue {
+				if i == 0 && pendingReuse != nil {
+					pendingReuse.Review = &ReviewOutcome{Status: "failed", Error: "batch canceled before review started"}
+					batch.Repositories = append(batch.Repositories, *pendingReuse)
+					continue
+				}
 				batch.Repositories = append(batch.Repositories, Outcome{Repository: repo, CheckedAt: time.Now().UTC(), Outcome: "unprocessed", Error: "batch canceled before attempt started"})
 			}
 			queue = queue[:0]
 			pendingFingerprint = ""
+			pendingReuse = nil
 			if failure == nil {
 				failure = errors.New("batch canceled")
 			}
@@ -165,9 +172,18 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos <-
 					continue
 				}
 				if ok {
-					queue = queue[1:]
-					record(reused)
-					continue
+					if !cfg.Review {
+						queue = queue[1:]
+						record(reused)
+						continue
+					}
+					if review, valid := reusableReview(cfg, reused); valid {
+						queue = queue[1:]
+						reused.Review = &review
+						record(reused)
+						continue
+					}
+					pendingReuse = &reused
 				}
 				pendingFingerprint = fingerprint
 			}
@@ -182,15 +198,29 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos <-
 				}
 				queue = queue[1:]
 				pendingFingerprint = ""
-				record(Outcome{Repository: repo, CheckedAt: time.Now().UTC(), Outcome: "unprocessed", Error: message})
+				if pendingReuse != nil {
+					pendingReuse.Review = &ReviewOutcome{Status: "failed", Error: message}
+					record(*pendingReuse)
+					pendingReuse = nil
+				} else {
+					record(Outcome{Repository: repo, CheckedAt: time.Now().UTC(), Outcome: "unprocessed", Error: message})
+				}
 				continue
 			}
 			queue = queue[1:]
 			active++
 			fingerprint := pendingFingerprint
+			reused := pendingReuse
 			pendingFingerprint = ""
+			pendingReuse = nil
 			go func() {
-				outcome, err := processRepository(ctx, cfg, c, repo, version, fingerprint, work, askpass)
+				var outcome Outcome
+				var err error
+				if reused != nil {
+					outcome, err = processReusedReview(ctx, cfg, c, *reused, work, askpass)
+				} else {
+					outcome, err = processRepository(ctx, cfg, c, repo, version, fingerprint, work, askpass)
+				}
 				completed <- completion{outcome, err}
 			}()
 		}
@@ -251,9 +281,15 @@ func processRepository(ctx context.Context, cfg Config, c Connection, repo Repos
 			}
 		}
 	}
-	cleanupErr := os.RemoveAll(checkout)
-	if cleanupErr != nil {
-		err = errors.New("cannot remove temporary checkout")
+	needsReview := cfg.Review && err == nil
+	var cleanupErr error
+	if needsReview {
+		defer os.RemoveAll(checkout)
+	} else {
+		cleanupErr = os.RemoveAll(checkout)
+		if cleanupErr != nil {
+			err = errors.New("cannot remove temporary checkout")
+		}
 	}
 	result.Outcome = "complete"
 	meta.Outcome = "complete"
@@ -276,6 +312,13 @@ func processRepository(ctx context.Context, cfg Config, c Connection, repo Repos
 	if result.Outcome == "complete" {
 		if saveErr := saveJSON(filepath.Join(cfg.ResultsDir, repositoryDir(repo), "latest.json"), redactValue(result, cfg)); saveErr != nil {
 			return storageFailure("cannot publish complete result")
+		}
+	}
+	if needsReview {
+		performReview(ctx, cfg, checkout, &result)
+		cleanupErr = os.RemoveAll(checkout)
+		if cleanupErr != nil {
+			result.Review = &ReviewOutcome{Status: "failed", Error: "cannot remove temporary review checkout"}
 		}
 	}
 	if cleanupErr != nil {

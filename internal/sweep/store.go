@@ -42,11 +42,18 @@ func saveAttempt(ctx context.Context, cfg Config, ref string, output any, meta M
 
 type Outcome struct {
 	Repository
-	Outcome   string     `json:"outcome"`
-	Result    string     `json:"result,omitempty"`
-	Error     string     `json:"error,omitempty"`
-	CheckedAt time.Time  `json:"checked_at"`
-	ScannedAt *time.Time `json:"scanned_at,omitempty"`
+	Review    *ReviewOutcome `json:"review,omitempty"`
+	Outcome   string         `json:"outcome"`
+	Result    string         `json:"result,omitempty"`
+	Error     string         `json:"error,omitempty"`
+	CheckedAt time.Time      `json:"checked_at"`
+	ScannedAt *time.Time     `json:"scanned_at,omitempty"`
+}
+type ReviewOutcome struct {
+	Status string `json:"status"`
+	Report string `json:"report,omitempty"`
+	Error  string `json:"error,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 type Scope struct {
 	Shallow    bool `json:"shallow"`
@@ -74,6 +81,7 @@ type Batch struct {
 	Selections        []Connection   `json:"selections"`
 	Repositories      []Outcome      `json:"repositories"`
 	Counts            map[string]int `json:"counts"`
+	ReviewCounts      map[string]int `json:"review_counts,omitempty"`
 	DiscoveryComplete bool           `json:"discovery_complete"`
 }
 
@@ -94,6 +102,10 @@ func saveJSON(path string, value any) error {
 		return err
 	}
 	data = append(data, '\n')
+	return saveBytes(path, data)
+}
+func saveBytes(path string, data []byte) error {
+	var err error
 	if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
@@ -117,8 +129,22 @@ func saveJSON(path string, value any) error {
 }
 func saveBatch(cfg Config, batch *Batch) error {
 	batch.Counts = map[string]int{"complete": 0, "failed": 0, "empty": 0, "reused": 0, "unprocessed": 0}
-	for _, r := range batch.Repositories {
+	if cfg.Review {
+		batch.ReviewCounts = map[string]int{"complete": 0, "reused": 0, "failed": 0, "skipped": 0}
+	}
+	for i := range batch.Repositories {
+		r := &batch.Repositories[i]
+		if cfg.Review && r.Review == nil {
+			reason := "inventory is " + r.Outcome
+			if r.Error != "" {
+				reason += ": " + r.Error
+			}
+			r.Review = &ReviewOutcome{Status: "skipped", Reason: reason}
+		}
 		batch.Counts[r.Outcome]++
+		if cfg.Review {
+			batch.ReviewCounts[r.Review.Status]++
+		}
 	}
 	if err := saveJSON(filepath.Join(cfg.ResultsDir, "batches", batch.ID+".json"), redactValue(batch, cfg)); err != nil {
 		return fmt.Errorf("save batch summary: %w", err)

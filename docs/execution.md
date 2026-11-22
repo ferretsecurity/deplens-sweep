@@ -28,9 +28,10 @@ failures are added to the summary after that connection's attempts finish.
 Until then, saved summaries report `discovery_complete: false`, so a forced kill
 during that window leaves a summary that does not claim complete discovery.
 
-The timeout is one total budget for Git acquisition, checkout verification, and
-deplens analysis together. Discovery of a repository happens before its budget starts; other
-repositories can still be discovered while it runs. A slow
+The timeout is one total budget for Git acquisition, checkout verification,
+deplens analysis, and the optional Codex review. A review-only retry gets a new
+timeout for its checkout and review. Discovery happens before the repository
+budget starts. A slow
 clone uses time that the scanner would otherwise have. On timeout, the command
 kills the affected process group, including its child processes, saves a failed
 outcome, removes the checkout, and continues other selected repositories. Any

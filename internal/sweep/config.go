@@ -42,6 +42,7 @@ type ScanConfig struct {
 	ExcludePresets []string `yaml:"exclude_presets" json:"exclude_presets,omitempty"`
 }
 type Config struct {
+	Review       bool          `yaml:"review"`
 	MinFreeBytes *uint64       `yaml:"min_free_bytes"`
 	Workers      int           `yaml:"workers"`
 	Timeout      time.Duration `yaml:"timeout"`
@@ -92,6 +93,9 @@ func LoadConfig(path string) (Config, error) {
 		names[c.Name] = true
 		if c.Provider != "gitlab" && c.Provider != "github" {
 			return cfg, errors.New("provider must be gitlab or github")
+		}
+		if cfg.Review && c.Provider != "github" {
+			return cfg, errors.New("review is supported only for GitHub connections")
 		}
 		if c.GitLabGroupDiscovery != "" {
 			if c.Provider != "gitlab" {
