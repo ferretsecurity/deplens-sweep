@@ -196,7 +196,7 @@ the test scans a known requirements file and checks the saved dependency invento
 
 ## Review dependency coverage
 
-The [starter YAML](sweep-oss.yaml) selects 1,000 open-source GitHub projects by star count. To try a smaller batch, copy it and keep only the repositories you want under `include.repositories`. The full file requests a review of every listed project. Run `python3 scripts/generate-oss-corpus.py` to refresh the list from GitHub.
+The [starter YAML](sweep-oss.yaml) selects 100 open-source GitHub projects by star count. To try a smaller batch, copy it and keep only the repositories you want under `include.repositories`. The full file requests a review of every listed project. Run `python3 scripts/generate-oss-corpus.py` to refresh the list from GitHub.
 
 Install `deplens` and `codex` on your PATH. The reviewer uses named filesystem permissions and structured output, tested with Codex CLI 0.169.0 on Linux. Sign in with `codex login`. The starter config uses `GITHUB_TOKEN` when set. Otherwise it uses your existing `gh auth login --hostname github.com` session. Build and run the sweep with the config you chose.
 
