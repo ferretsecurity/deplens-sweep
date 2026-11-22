@@ -53,6 +53,7 @@ func performReview(ctx context.Context, cfg Config, checkout string, result *Out
 	fingerprint, err := reviewFingerprint(scanPath)
 	var report []byte
 	if err == nil {
+		cfg.progress("%s: reviewing %s with Codex", result.Connection, result.Path)
 		report, err = runReview(ctx, checkout, scanPath)
 	}
 	if err == nil {
@@ -89,6 +90,7 @@ func processReusedReview(ctx context.Context, cfg Config, c Connection, result O
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 	checkout := filepath.Join(work, "checkout-"+newID())
+	cfg.progress("%s: cloning %s for review of saved scan", c.Name, result.Path)
 	if err := acquire(ctx, c, result.Repository, checkout, askpass); err != nil {
 		result.Review = &ReviewOutcome{Status: "failed", Error: err.Error()}
 	} else {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -55,6 +56,7 @@ func Run(ctx context.Context, cfg Config) (batch Batch, err error) {
 		}
 	}()
 	for _, c := range cfg.Connections {
+		cfg.progress("%s: discovering %s repositories", c.Name, c.Provider)
 		// Discovery feeds the workers while it runs, so the first clones do not wait
 		// for the whole walk. The coordinator drains repos until discovery closes it.
 		repos := make(chan Repository, 256)
@@ -66,7 +68,8 @@ func Run(ctx context.Context, cfg Config) (batch Batch, err error) {
 			defer close(repos)
 			if c.Provider == "github" {
 				var found []Repository
-				found, failures = discoverGitHub(ctx, c, cfg.Review)
+				found, failures = discoverGitHub(ctx, c, cfg)
+				cfg.progress("%s: discovery finished (selected: %d, errors: %d)", c.Name, len(found), len(failures))
 				for _, repo := range found {
 					repos <- repo
 				}
@@ -80,7 +83,10 @@ func Run(ctx context.Context, cfg Config) (batch Batch, err error) {
 		// processRepositories returns only after repos is closed, so failures is final.
 		batch.DiscoveryComplete = discovered && len(failures) == 0
 		if len(failures) > 0 {
-			batch.Repositories = append(batch.Repositories, failures...)
+			for _, result := range failures {
+				batch.Repositories = append(batch.Repositories, result)
+				cfg.logOutcome(len(batch.Repositories), result)
+			}
 			if err = saveBatch(cfg, &batch); err != nil {
 				return batch, err
 			}
@@ -97,6 +103,7 @@ func Run(ctx context.Context, cfg Config) (batch Batch, err error) {
 	if err = saveBatch(cfg, &batch); err != nil {
 		return batch, err
 	}
+	cfg.progress("Batch %s: %s. Outcomes: %d. Summary: %s", batch.ID, batch.Status, len(batch.Repositories), filepath.Join(cfg.ResultsDir, "batches", batch.ID+".json"))
 	if batch.Status == "incomplete" {
 		return batch, errors.New("batch is incomplete; see saved repository outcomes")
 	}
@@ -121,6 +128,8 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos <-
 	var failure error
 	var pendingFingerprint string
 	var pendingReuse *Outcome
+	heartbeat := time.NewTicker(30 * time.Second)
+	defer heartbeat.Stop()
 	// Rewriting the whole summary costs time proportional to its size, so saving it
 	// after every outcome makes a large sweep quadratic. Attempts and latest
 	// references are saved immediately; the summary is saved when an outcome
@@ -138,6 +147,7 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos <-
 	}
 	record := func(result Outcome) {
 		batch.Repositories = append(batch.Repositories, result)
+		cfg.logOutcome(len(batch.Repositories), result)
 		persist()
 	}
 	for open || len(queue) > 0 || active > 0 {
@@ -232,6 +242,8 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos <-
 			incoming = nil
 		}
 		select {
+		case <-heartbeat.C:
+			cfg.progress("%s: %d finished in batch, %d active, %d queued", c.Name, len(batch.Repositories), active, len(queue))
 		case repo, ok := <-incoming:
 			if !ok {
 				open = false
@@ -240,12 +252,11 @@ func processRepositories(ctx context.Context, cfg Config, c Connection, repos <-
 			queue = append(queue, repo)
 		case result := <-completed:
 			active--
-			batch.Repositories = append(batch.Repositories, result.outcome)
 			if result.err != nil && failure == nil {
 				failure = result.err
 				cancel()
 			}
-			persist()
+			record(result.outcome)
 		}
 	}
 	if err := saveBatch(cfg, batch); err != nil && failure == nil {
@@ -261,6 +272,7 @@ func processRepository(ctx context.Context, cfg Config, c Connection, repo Repos
 	ref := filepath.Join(repositoryDir(repo), "attempts", newID())
 	checkout := filepath.Join(work, "checkout-"+newID())
 	meta := Metadata{Repository: repo, ScannerVersion: version, InputFingerprint: fingerprint, Configuration: cfg.Deplens, Scope: Scope{Shallow: true}, StartedAt: started, Outcome: "failed"}
+	cfg.progress("%s: cloning %s", c.Name, repo.Path)
 	err := acquire(ctx, c, repo, checkout, askpass)
 	var output any
 	if err == nil {
@@ -270,6 +282,7 @@ func processRepository(ctx context.Context, cfg Config, c Connection, repo Repos
 		scanned := time.Now().UTC()
 		meta.ScannedAt = &scanned
 		result.ScannedAt = &scanned
+		cfg.progress("%s: scanning %s with deplens", c.Name, repo.Path)
 		output, err = analyze(ctx, cfg, checkout)
 		if identityErr := verifyScanner(cfg.Deplens, version); identityErr != nil {
 			err = identityErr
@@ -326,6 +339,26 @@ func processRepository(ctx context.Context, cfg Config, c Connection, repo Repos
 	}
 	return result, nil
 }
+func (cfg Config) progress(format string, args ...any) {
+	message := redactValue(fmt.Sprintf(format, args...), cfg).(string)
+	quoted := strconv.QuoteToGraphic(message)
+	fmt.Fprintln(os.Stderr, quoted[1:len(quoted)-1])
+}
+
+func (cfg Config) logOutcome(finished int, result Outcome) {
+	status := result.Outcome
+	if result.Error != "" {
+		status += " (" + result.Error + ")"
+	}
+	if result.Review != nil {
+		status += ", review " + result.Review.Status
+		if result.Review.Error != "" {
+			status += " (" + result.Review.Error + ")"
+		}
+	}
+	cfg.progress("[%d finished] %s: %s: %s", finished, result.Connection, result.Path, status)
+}
+
 func redactValue(value any, cfg Config) any {
 	// Decode typed metadata too so every persisted string uses the same redaction.
 	raw, _ := json.Marshal(value)

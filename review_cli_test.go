@@ -1,7 +1,10 @@
 package sweep_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -153,4 +156,27 @@ func TestReviewCannotReadInputsIsRetried(t *testing.T) {
 	if second["outcome"] != "reused" || second["review"].(map[string]any)["status"] != "complete" {
 		t.Fatalf("original inventory was not reviewed: %#v", second)
 	}
+}
+
+func TestReviewProgressGoesToStderr(t *testing.T) {
+	f := reviewFixture(t)
+	installReviewCLI(t, f, reviewSuccess)
+	cmd := exec.Command(binary, "--config", f.config)
+	var progress bytes.Buffer
+	cmd.Stderr = &progress
+	f.syncServer()
+	out, err := cmd.Output()
+	f.syncServer()
+	if err != nil || !json.Valid(out) {
+		t.Fatalf("expected JSON summary: %v %s", err, out)
+	}
+	messages := progress.String()
+	for _, stage := range []string{"checking entry 1/1 (team/project)", "cloning team/project", "scanning team/project with deplens", "reviewing team/project with Codex", "[1 finished] team: team/project: complete, review complete", "Summary:"} {
+		_, rest, ok := strings.Cut(messages, stage)
+		if !ok {
+			t.Fatalf("missing or out-of-order progress %q in %s", stage, progress.String())
+		}
+		messages = rest
+	}
+	f.assertNoSecretOrCheckout(progress.Bytes())
 }

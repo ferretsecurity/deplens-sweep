@@ -95,6 +95,8 @@ working tree. Submodules can be selected as separate repositories.
 
 ## Results and reuse
 
+Progress appears on stderr during discovery, cloning, scanning, and review. Longer runs also print finished, active, and queued counts every 30 seconds. Redirect stdout to a file to save the final JSON while watching progress in the terminal.
+
 The command prints a JSON batch summary and saves it at
 `results_dir/batches/<batch-id>.json`. It records selections, discovery status,
 per-repository outcomes, result references, counts, and check times as work

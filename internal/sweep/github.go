@@ -152,7 +152,7 @@ func githubList(ctx context.Context, c Connection, path string, add func(githubR
 	return nil
 }
 
-func discoverGitHub(ctx context.Context, c Connection, review bool) ([]Repository, []Outcome) {
+func discoverGitHub(ctx context.Context, c Connection, cfg Config) ([]Repository, []Outcome) {
 	var repos []Repository
 	var failures []Outcome
 	excluded := map[string]bool{}
@@ -180,7 +180,7 @@ func discoverGitHub(ctx context.Context, c Connection, review bool) ([]Repositor
 		}
 		seenIDs[p.ID] = true
 		repo.ID = strconv.FormatInt(p.ID, 10)
-		if review && (p.Visibility != "public" || !osiApproved[p.License.SPDX]) {
+		if cfg.Review && (p.Visibility != "public" || !osiApproved[p.License.SPDX]) {
 			failure(repo, errors.New("review requires a public repository with an OSI-approved license detected by GitHub"))
 			return
 		}
@@ -212,7 +212,10 @@ func discoverGitHub(ctx context.Context, c Connection, review bool) ([]Repositor
 		repos = append(repos, repo)
 	}
 	seenPaths := map[string]bool{}
-	for _, path := range c.Include.Repositories {
+	for i, path := range c.Include.Repositories {
+		if i == 0 || (i+1)%25 == 0 || i+1 == len(c.Include.Repositories) {
+			cfg.progress("%s: checking entry %d/%d (%s)", c.Name, i+1, len(c.Include.Repositories), path)
+		}
 		if seenPaths[path] || excluded[path] || excludedOwner(path) {
 			continue
 		}
