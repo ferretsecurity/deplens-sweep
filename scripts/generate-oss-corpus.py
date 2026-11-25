@@ -26,7 +26,7 @@ SPDX_URL = (
     "ab9b0904b43db6f4b67431efd8821feb821f1c8b/json/licenses.json"
 )
 BASE_QUERY = "is:public fork:false archived:false"
-TARGET = 100
+TARGET = 500
 
 
 def fetch_json(url, token=""):

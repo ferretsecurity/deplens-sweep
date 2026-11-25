@@ -12,7 +12,7 @@ One invocation's repository selection, discovery status, and collection outcomes
 _Avoid_: Schedule, service
 
 **Starter corpus**:
-The fixed selection of 100 public GitHub repositories used for the initial dependency coverage study. At selection time, these were the most-starred eligible projects with a detected OSI-approved license, excluding forks and archived projects.
+The fixed selection of 500 public GitHub repositories used for the dependency coverage study. At selection time, these were the most-starred eligible projects with a detected OSI-approved license, excluding forks and archived projects.
 
 **Dependency source**:
 A file that declares, fetches, or uses a dependency to build, test, package, deploy, or run the project. This includes project-specific scripts.
