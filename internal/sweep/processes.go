@@ -267,6 +267,9 @@ func analyze(ctx context.Context, cfg Config, checkout string) (any, error) {
 	}
 	return output, nil
 }
+
+var errIncompleteExtraction = errors.New("deplens analysis is incomplete")
+
 func completeAnalysis(output any) error {
 	root, ok := output.(map[string]any)
 	if !ok {
@@ -287,6 +290,7 @@ func completeAnalysis(output any) error {
 			return fmt.Errorf("deplens output has invalid %s", key)
 		}
 	}
+	var incomplete error
 	sources, _ := root["sources"].([]any)
 	for _, raw := range sources {
 		source, ok := raw.(map[string]any)
@@ -305,14 +309,14 @@ func completeAnalysis(output any) error {
 		switch analysis["extraction"] {
 		case "complete", "unsupported":
 		case "partial", "failed":
-			return errors.New("deplens analysis is incomplete")
+			incomplete = errIncompleteExtraction
 		default:
 			return errors.New("invalid source extraction state")
 		}
 		diagnostics, _ := source["diagnostics"].([]any)
 		for _, raw := range diagnostics {
-			if diagnostic, ok := raw.(map[string]any); ok && diagnostic["severity"] == "error" {
-				return errors.New("deplens reported an analysis error")
+			if diagnostic, ok := raw.(map[string]any); ok && diagnostic["severity"] == "error" && incomplete == nil {
+				incomplete = errors.New("deplens reported an analysis error")
 			}
 		}
 	}
@@ -325,12 +329,14 @@ func completeAnalysis(output any) error {
 		switch run["status"] {
 		case "completed", "skipped":
 		case "failed":
-			return errors.New("deplens check execution failed")
+			if incomplete == nil {
+				incomplete = errors.New("deplens check execution failed")
+			}
 		default:
 			return errors.New("invalid check run status")
 		}
 	}
-	return nil
+	return incomplete
 }
 func writeAskpass(dir string) (string, error) {
 	path := filepath.Join(dir, "askpass")

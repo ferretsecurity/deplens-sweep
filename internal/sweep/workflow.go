@@ -287,14 +287,14 @@ func processRepository(ctx context.Context, cfg Config, c Connection, repo Repos
 		if identityErr := verifyScanner(cfg.Deplens, version); identityErr != nil {
 			err = identityErr
 		}
-		if err == nil {
+		if err == nil || errors.Is(err, errIncompleteExtraction) {
 			after, fingerprintErr := inputFingerprint(cfg.Deplens, version)
 			if fingerprintErr != nil || after != fingerprint {
 				err = errors.New("scan configuration changed during analysis")
 			}
 		}
 	}
-	needsReview := cfg.Review && err == nil
+	needsReview := cfg.Review && (err == nil || errors.Is(err, errIncompleteExtraction))
 	var cleanupErr error
 	if needsReview {
 		defer os.RemoveAll(checkout)

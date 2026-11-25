@@ -114,7 +114,7 @@ func TestReviewFailurePreservesInventoryForRetryAndReuse(t *testing.T) {
 	}
 }
 
-func TestReviewSkipsPartialInventory(t *testing.T) {
+func TestReviewReportsPartialInventory(t *testing.T) {
 	f := reviewFixture(t)
 	if err := os.WriteFile(f.scanner, []byte(`#!/bin/sh
 echo '{"schema_version":1,"root":"fixture","sources":[{"analysis":{"presence":"present","extraction":"partial"}}],"findings":[],"check_runs":[]}'
@@ -127,15 +127,15 @@ echo '{"schema_version":1,"root":"fixture","sources":[{"analysis":{"presence":"p
 		t.Fatalf("partial scan returned success: %s", out)
 	}
 	row := f.summary()["repositories"].([]any)[0].(map[string]any)
-	if row["review"].(map[string]any)["status"] != "skipped" || row["outcome"] != "failed" {
-		t.Fatalf("partial scan reviewed: %#v", row)
+	if row["review"].(map[string]any)["status"] != "complete" || row["outcome"] != "failed" {
+		t.Fatalf("expected failed inventory with completed review: %#v", row)
 	}
 	path := filepath.Join(f.results, row["result"].(string))
 	if _, err := os.Stat(filepath.Join(path, "scan.json")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(path, "review.md")); !os.IsNotExist(err) {
-		t.Fatalf("unexpected report: %v", err)
+	if _, err := os.Stat(filepath.Join(path, "review.md")); err != nil {
+		t.Fatalf("missing report: %v", err)
 	}
 }
 

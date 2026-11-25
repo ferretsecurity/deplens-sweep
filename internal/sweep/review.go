@@ -27,7 +27,7 @@ The scan's recorded root may name an earlier temporary checkout; sweep verifies 
 Compare your inventory with the scan's actual sources, extracted references, analysis states, diagnostics, and check runs. Distinguish:
 - A missing source: a repository file or dependency source absent from the scan.
 - A missing or incorrect reference: a dependency reference absent or wrong within a source the scan recognized.
-- Known unsupported coverage: a source or construct the saved scan explicitly marks unsupported, skipped, or diagnostic-limited. Do not describe acknowledged unsupported coverage as a newly discovered extractor bug.
+- Known unsupported coverage: a source or construct the saved scan explicitly marks unsupported, skipped, or diagnostic-limited. When a source has partial or failed extraction, cite that state and identify which references are affected. Keep limitations explained by the scan separate from omissions the scan did not explain.
 
 Include these sections:
 1. Summary and confidence. State whether the scan covers the repository's observed dependency flows. An AI review is advisory, never a proof of completeness.
