@@ -95,6 +95,8 @@ working tree. Submodules can be selected as separate repositories.
 
 ## Results and reuse
 
+Progress appears on stderr during discovery, cloning, scanning, and review. Longer runs also print finished, active, and queued counts every 30 seconds. Redirect stdout to a file to save the final JSON while watching progress in the terminal.
+
 The command prints a JSON batch summary and saves it at
 `results_dir/batches/<batch-id>.json`. It records selections, discovery status,
 per-repository outcomes, result references, counts, and check times as work
@@ -191,3 +193,30 @@ SWEEP_REAL_DEPLENS=/absolute/path/to/deplens go test ./...
 
 The real-scanner integration skips when SWEEP_REAL_DEPLENS is unset. With it set,
 the test scans a known requirements file and checks the saved dependency inventory.
+
+## Review dependency coverage
+
+```text
+YAML → select repositories → pin each commit → clone → DepLens CLI → scan.json
+                                                          ↓
+                                    complete scan + review enabled
+                                                          ↓
+                                    Codex reads checkout and scan → review.md
+```
+
+The batch JSON records each inventory outcome and, when requested, its review outcome. Review is off by default. The starter YAML enables it. Finding a coverage gap counts as a successful review.
+
+The [starter YAML](sweep-oss.yaml) selects 500 open-source GitHub projects by star count. To try a smaller batch, copy it and keep only the repositories you want under `include.repositories`. The full file requests a review of every listed project. Run `python3 scripts/generate-oss-corpus.py` to refresh the list from GitHub.
+
+Install `deplens` and `codex` on your PATH. The reviewer uses named filesystem permissions and structured output, tested with Codex CLI 0.169.0 on Linux. Sign in with `codex login`. The starter config uses `GITHUB_TOKEN` when set. Otherwise it uses your existing `gh auth login --hostname github.com` session. Build and run the sweep with the config you chose.
+
+```sh
+go build -o deplens-sweep ./cmd/deplens-sweep
+./deplens-sweep --config sweep-oss.yaml
+```
+
+Set the top-level YAML field `review: true` to enable coverage reviews. Review runs require GitHub connections. Sweep checks GitHub's current visibility and detected license before cloning or reusing an inventory. A private repository, an unknown license, or a license outside the pinned OSI-approved list produces a failed repository outcome.
+
+After a complete scan, Codex reads the checkout and saved inventory in a read-only sandbox with `gpt-6.1-terra` at medium reasoning. It looks for conventional files such as `requirements.txt` and project-specific declarations such as a shell script that downloads a build tool. Its Markdown report identifies missed sources, missed references, and limitations deplens already reported. Codex cites a repository path and line for each finding. The report describes what Codex inspected and any limits on its conclusions.
+
+Open the batch summary and follow each repository's `review.report` path relative to the results directory. Sweep saves `review.md` beside `scan.json`. A failed or partial scan skips the review. A review failure makes the batch incomplete and keeps the inventory available for retry. Run the same command again to reuse matching inventories and reports.

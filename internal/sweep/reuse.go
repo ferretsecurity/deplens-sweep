@@ -153,26 +153,34 @@ func repairLatest(cfg Config, repo Repository, latest *Outcome) error {
 }
 
 func readSavedJSON(root, ref string, value any) bool {
-	// Reject links at every component, including attempt directories. Results may
-	// be damaged or edited; never let a history entry read files outside its root.
-	if filepath.IsAbs(ref) || filepath.Clean(ref) != ref {
-		return false
-	}
-	path := root
-	for _, part := range strings.Split(ref, string(filepath.Separator)) {
-		if part == ".." || part == "." || part == "" {
-			return false
-		}
-		path = filepath.Join(path, part)
-		info, err := os.Lstat(path)
-		if err != nil || info.Mode()&os.ModeSymlink != 0 {
-			return false
-		}
-	}
-	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() {
+	path, ok := savedRegularPath(root, ref)
+	if !ok {
 		return false
 	}
 	raw, err := os.ReadFile(path)
 	return err == nil && json.Unmarshal(raw, value) == nil
+}
+
+func savedRegularPath(root, ref string) (string, bool) {
+	// Reject links at every component, including attempt directories. Results may
+	// be damaged or edited; never let a history entry read files outside its root.
+	if filepath.IsAbs(ref) || filepath.Clean(ref) != ref {
+		return "", false
+	}
+	path := root
+	for _, part := range strings.Split(ref, string(filepath.Separator)) {
+		if part == ".." || part == "." || part == "" {
+			return "", false
+		}
+		path = filepath.Join(path, part)
+		info, err := os.Lstat(path)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+			return "", false
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
+	return path, true
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -42,6 +43,7 @@ type ScanConfig struct {
 	ExcludePresets []string `yaml:"exclude_presets" json:"exclude_presets,omitempty"`
 }
 type Config struct {
+	Review       bool          `yaml:"review"`
 	MinFreeBytes *uint64       `yaml:"min_free_bytes"`
 	Workers      int           `yaml:"workers"`
 	Timeout      time.Duration `yaml:"timeout"`
@@ -93,6 +95,9 @@ func LoadConfig(path string) (Config, error) {
 		if c.Provider != "gitlab" && c.Provider != "github" {
 			return cfg, errors.New("provider must be gitlab or github")
 		}
+		if cfg.Review && c.Provider != "github" {
+			return cfg, errors.New("review is supported only for GitHub connections")
+		}
 		if c.GitLabGroupDiscovery != "" {
 			if c.Provider != "gitlab" {
 				return cfg, errors.New("gitlab_group_discovery is supported only for gitlab")
@@ -133,8 +138,18 @@ func LoadConfig(path string) (Config, error) {
 			}
 		}
 		c.token = os.Getenv(c.TokenEnv)
-		if c.TokenEnv == "" || c.token == "" {
-			return cfg, errors.New("connection token environment variable is missing or empty")
+		if c.token == "" && cfg.Review && c.ServerURL == "https://github.com" && c.TokenEnv == "GITHUB_TOKEN" {
+			raw, err := exec.Command("gh", "auth", "token", "--hostname", "github.com").Output()
+			c.token = strings.TrimSpace(string(raw))
+			if err != nil || c.token == "" {
+				return cfg, fmt.Errorf("connection %q: set GITHUB_TOKEN or sign in with gh auth login --hostname github.com", c.Name)
+			}
+		}
+		if c.TokenEnv == "" {
+			return cfg, fmt.Errorf("connection %q requires token_env", c.Name)
+		}
+		if c.token == "" {
+			return cfg, fmt.Errorf("connection %q requires environment variable %s", c.Name, c.TokenEnv)
 		}
 	}
 	base, e := filepath.Abs(filepath.Dir(path))

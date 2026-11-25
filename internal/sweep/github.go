@@ -2,6 +2,7 @@ package sweep
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,7 +22,22 @@ type githubRepository struct {
 	CloneURL      string `json:"clone_url"`
 	Archived      bool   `json:"archived"`
 	Fork          bool   `json:"fork"`
+	Visibility    string `json:"visibility"`
+	License       struct {
+		SPDX string `json:"spdx_id"`
+	} `json:"license"`
 }
+
+//go:embed osi-licenses.txt
+var osiLicenseList string
+
+var osiApproved = func() map[string]bool {
+	approved := make(map[string]bool)
+	for _, id := range strings.Fields(osiLicenseList) {
+		approved[id] = true
+	}
+	return approved
+}()
 
 type githubAPIError struct {
 	status int
@@ -136,7 +152,7 @@ func githubList(ctx context.Context, c Connection, path string, add func(githubR
 	return nil
 }
 
-func discoverGitHub(ctx context.Context, c Connection) ([]Repository, []Outcome) {
+func discoverGitHub(ctx context.Context, c Connection, cfg Config) ([]Repository, []Outcome) {
 	var repos []Repository
 	var failures []Outcome
 	excluded := map[string]bool{}
@@ -164,6 +180,10 @@ func discoverGitHub(ctx context.Context, c Connection) ([]Repository, []Outcome)
 		}
 		seenIDs[p.ID] = true
 		repo.ID = strconv.FormatInt(p.ID, 10)
+		if cfg.Review && (p.Visibility != "public" || !osiApproved[p.License.SPDX]) {
+			failure(repo, errors.New("review requires a public repository with an OSI-approved license detected by GitHub"))
+			return
+		}
 		repo.DefaultBranch = p.DefaultBranch
 		repo.CloneURL = p.CloneURL
 		if repo.DefaultBranch == "" {
@@ -192,7 +212,10 @@ func discoverGitHub(ctx context.Context, c Connection) ([]Repository, []Outcome)
 		repos = append(repos, repo)
 	}
 	seenPaths := map[string]bool{}
-	for _, path := range c.Include.Repositories {
+	for i, path := range c.Include.Repositories {
+		if i == 0 || (i+1)%25 == 0 || i+1 == len(c.Include.Repositories) {
+			cfg.progress("%s: checking entry %d/%d (%s)", c.Name, i+1, len(c.Include.Repositories), path)
+		}
 		if seenPaths[path] || excluded[path] || excludedOwner(path) {
 			continue
 		}

@@ -236,7 +236,7 @@ func scanArguments(cfg ScanConfig, checkout string) []string {
 }
 func analyze(ctx context.Context, cfg Config, checkout string) (any, error) {
 	cmd := processCommand(ctx, cfg.Deplens.Executable, scanArguments(cfg.Deplens, checkout)...)
-	hidden := map[string]bool{"SWEEP_GIT_TOKEN": true}
+	hidden := map[string]bool{"SWEEP_GIT_TOKEN": true, "GH_TOKEN": true}
 	for _, c := range cfg.Connections {
 		hidden[c.TokenEnv] = true
 	}
